@@ -1,0 +1,94 @@
+{
+  "$schema": "./installer-config.schema.json",
+  "schemaVersion": "1.1",
+  "description": "仅供构建工具读取。构建后配置会编译进安装器，最终用户不会看到或修改本文件。",
+
+  "product": {
+    "name": "NewClass智慧教学",
+    "subtitle": "教师端安装程序",
+    "version": "3.2.1",
+    "build": "20260813",
+    "architecture": "x64",
+    "publisher": "NewClass Technologies",
+    "iconPath": "assets/logo.png",
+    "stubSizeMB": 15.2
+  },
+
+  "installBehavior": {
+    "defaultInstallPath": "C:\\Program Files\\NewClass",
+    "allowChooseInstallPath": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "allowAutoStart": true,
+    "autoStartDefault": false,
+    "environmentVariables": {
+      "enabled": true,
+      "scope": "machine",
+      "values": {
+        "NEWCLASS_HOME": "${INSTALL_DIR}",
+        "NEWCLASS_VERSION": "3.2.1",
+        "NEWCLASS_DATA_DIR": "${INSTALL_DIR}\\data"
+      }
+    }
+  },
+
+  "externalResources": {
+    "enabled": true,
+    "downloadServer": "https://cdn.newclass.edu.cn",
+    "connectionTimeoutSeconds": 30,
+    "retryCount": 3,
+    "verifySha256": true,
+    "resources": [
+      {
+        "id": "base-resources",
+        "displayName": "基础教学资源包",
+        "description": "包含常用教学工具、基础课件模板和系统字体资源",
+        "sizeMB": 125,
+        "required": true,
+        "downloadPath": "/newclass/v3.2.1/resources/base-resources.7z",
+        "extractTarget": "${INSTALL_DIR}\\resources\\base",
+        "sha256": "REPLACE_WITH_ACTUAL_SHA256"
+      },
+      {
+        "id": "question-bank",
+        "displayName": "学科题库数据包",
+        "description": "覆盖语文、数学、英语等主要学科的标准化题库数据",
+        "sizeMB": 340,
+        "required": true,
+        "downloadPath": "/newclass/v3.2.1/resources/question-bank.7z",
+        "extractTarget": "${INSTALL_DIR}\\data\\question-bank",
+        "sha256": "REPLACE_WITH_ACTUAL_SHA256"
+      },
+      {
+        "id": "media-library",
+        "displayName": "多媒体素材库",
+        "description": "图片、音频、视频等教学多媒体素材资源集合",
+        "sizeMB": 580,
+        "required": false,
+        "downloadPath": "/newclass/v3.2.1/resources/media-library.7z",
+        "extractTarget": "${INSTALL_DIR}\\assets\\media",
+        "sha256": "REPLACE_WITH_ACTUAL_SHA256"
+      },
+      {
+        "id": "courseware-templates",
+        "displayName": "交互式课件模板",
+        "description": "精美的交互式课件模板集合，支持课堂互动教学",
+        "sizeMB": 210,
+        "required": false,
+        "downloadPath": "/newclass/v3.2.1/resources/courseware-templates.7z",
+        "extractTarget": "${INSTALL_DIR}\\templates\\interactive",
+        "sha256": "REPLACE_WITH_ACTUAL_SHA256"
+      },
+      {
+        "id": "sample-courses",
+        "displayName": "示例课程包",
+        "description": "完整的示例课程和教学案例，快速上手智慧教学",
+        "sizeMB": 95,
+        "required": false,
+        "downloadPath": "/newclass/v3.2.1/resources/sample-courses.7z",
+        "extractTarget": "${INSTALL_DIR}\\examples\\courses",
+        "sha256": "REPLACE_WITH_ACTUAL_SHA256"
+      }
+    ]
+  }
+}
