@@ -1,0 +1,18 @@
+# Build artifacts
+installer_exe/setup-payload.exe
+installer_exe/*-Setup-*.exe
+installer_exe/build-status.json
+installer_exe/_build_*/
+
+# Test output
+installer_exe/智慧教学系统-Setup-*.exe
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+
+# OS
+Thumbs.db
+desktop.ini
