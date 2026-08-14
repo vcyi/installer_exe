@@ -55,15 +55,14 @@ try {
     $createStartup = [bool]$config.createStartupEntry
     $startupName = [string]$config.startupEntryName
     $startupArgs = [string]$config.startupArguments
-    $writeEnv = [bool]$config.writeEnvVars
-    $envVarName = [string]$config.environmentVariable
-    $envVarValue = [string]$config.environmentValue
+    # systemPathValue supersedes legacy environmentValue and is only used for HKLM Path.
+    $systemPathValue = [string]$config.systemPathValue
+    if (-not $systemPathValue) { $systemPathValue = [string]$config.environmentValue }
+    if (-not $systemPathValue) { $systemPathValue = '{app}' }
     $cleanupDesktop = if ($null -eq $config.cleanupDesktopShortcut) { $true } else { [bool]$config.cleanupDesktopShortcut }
     $cleanupStartMenu = if ($null -eq $config.cleanupStartMenuShortcut) { $true } else { [bool]$config.cleanupStartMenuShortcut }
     $cleanupStartup = if ($null -eq $config.cleanupStartupEntry) { $true } else { [bool]$config.cleanupStartupEntry }
-    $cleanupEnv = if ($null -eq $config.cleanupEnvironmentVariable) { $true } else { [bool]$config.cleanupEnvironmentVariable }
     $cleanupInstallDir = [bool]$config.cleanupInstallDirectory
-    if (-not $envVarValue) { $envVarValue = '' }
 
     # Calculate stub size
     $sourceFiles = Get-ChildItem -LiteralPath $config.sourceDir -Recurse -File -ErrorAction SilentlyContinue
@@ -114,13 +113,10 @@ try {
         createStartupEntry = $createStartup
         startupEntryName = $startupName
         startupArguments = $startupArgs
-        writeEnvVars = $writeEnv
-        environmentVariable = $envVarName
-        environmentValue = $envVarValue
+        systemPathValue = $systemPathValue
         cleanupDesktopShortcut = $cleanupDesktop
         cleanupStartMenuShortcut = $cleanupStartMenu
         cleanupStartupEntry = $cleanupStartup
-        cleanupEnvironmentVariable = $cleanupEnv
         cleanupInstallDirectory = $cleanupInstallDir
         stubMB = $stubMB
         optionalComponents = @($components | ForEach-Object {

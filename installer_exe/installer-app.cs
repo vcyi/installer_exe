@@ -49,16 +49,13 @@ namespace InstallerApp
         bool createDesktop = true;
         bool createStartMenu = true;
         bool createStartup = false;
-        bool writeEnv = false;
         bool cleanupDesktop = true;
         bool cleanupStartMenu = true;
         bool cleanupStartup = true;
-        bool cleanupEnv = true;
         bool cleanupInstallDir = false;
         string startupName = "";
         string startupArgs = "";
-        string envVar = "";
-        string envVal = "";
+        string systemPathValue = "{app}";
         string sourceDir = "";
         List<CompInfo> components = new List<CompInfo>();
 
@@ -146,16 +143,13 @@ namespace InstallerApp
                 createDesktop = GetBool(cfg, "createDesktopShortcut", true);
                 createStartMenu = GetBool(cfg, "createStartMenuShortcut", true);
                 createStartup = GetBool(cfg, "createStartupEntry", false);
-                writeEnv = GetBool(cfg, "writeEnvVars", false);
                 cleanupDesktop = GetBool(cfg, "cleanupDesktopShortcut", true);
                 cleanupStartMenu = GetBool(cfg, "cleanupStartMenuShortcut", true);
                 cleanupStartup = GetBool(cfg, "cleanupStartupEntry", true);
-                cleanupEnv = GetBool(cfg, "cleanupEnvironmentVariable", true);
                 cleanupInstallDir = GetBool(cfg, "cleanupInstallDirectory", false);
                 startupName = GetStr(cfg, "startupEntryName", productName);
                 startupArgs = GetStr(cfg, "startupArguments", "");
-                envVar = GetStr(cfg, "environmentVariable", "");
-                envVal = GetStr(cfg, "environmentValue", "");
+                systemPathValue = GetStr(cfg, "systemPathValue", GetStr(cfg, "environmentValue", "{app}"));
                 selectedPath = installPath;
                 sourceDir = Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "source");
 
@@ -814,20 +808,12 @@ namespace InstallerApp
                     w.ReportProgress(74, "创建启动项: " + runName);
                 }
 
-                // Current-user environment variable; avoids requiring administrator rights.
-                string resolvedEnvironmentValue = string.IsNullOrEmpty(envVal) ? selectedPath : envVal.Replace("{app}", selectedPath);
-                if (writeEnv && !string.IsNullOrEmpty(envVar))
-                {
-                    Environment.SetEnvironmentVariable(envVar, resolvedEnvironmentValue, EnvironmentVariableTarget.User);
-                    EnvironmentNotifier.Broadcast();
-                    w.ReportProgress(75, "设置环境变量: " + envVar);
-                }
-
+                // Only the HKLM system Path is written. {app} resolves to the actual selected install directory.
                 string systemPathEntry = "";
                 if (addToSystemPath)
                 {
-                    systemPathEntry = writeEnv && !string.IsNullOrEmpty(envVar) ? resolvedEnvironmentValue : selectedPath;
-                    if (!SystemPath.Add(systemPathEntry)) systemPathEntry = "";
+                    string resolvedSystemPath = string.IsNullOrEmpty(systemPathValue) ? selectedPath : systemPathValue.Replace("{app}", selectedPath);
+                    if (!SystemPath.Add(resolvedSystemPath)) systemPathEntry = ""; else systemPathEntry = resolvedSystemPath;
                     w.ReportProgress(76, string.IsNullOrEmpty(systemPathEntry) ? "系统 Path 已存在相同项，未重复添加" : "已加入系统 Path: " + systemPathEntry);
                 }
 
@@ -934,12 +920,10 @@ namespace InstallerApp
             manifest["desktopShortcut"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), productName + ".lnk");
             manifest["startMenuDirectory"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), productName);
             manifest["startupEntryName"] = string.IsNullOrEmpty(startupName) ? productName : startupName;
-            manifest["environmentVariable"] = envVar;
             manifest["systemPathEntry"] = systemPathEntry;
             manifest["cleanupDesktopShortcut"] = cleanupDesktop;
             manifest["cleanupStartMenuShortcut"] = cleanupStartMenu;
             manifest["cleanupStartupEntry"] = cleanupStartup;
-            manifest["cleanupEnvironmentVariable"] = cleanupEnv;
             manifest["cleanupInstallDirectory"] = cleanupInstallDir;
             File.WriteAllText(Path.Combine(selectedPath, ".installer-uninstall.json"), new JavaScriptSerializer().Serialize(manifest));
             RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + productName);
@@ -1027,7 +1011,6 @@ namespace InstallerApp
                 if (Bool(cfg, "cleanupDesktopShortcut")) { string p = Str(cfg, "desktopShortcut"); if (File.Exists(p)) File.Delete(p); }
                 if (Bool(cfg, "cleanupStartMenuShortcut")) { string p = Str(cfg, "startMenuDirectory"); if (Directory.Exists(p)) Directory.Delete(p, true); }
                 if (Bool(cfg, "cleanupStartupEntry")) Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run").DeleteValue(Str(cfg, "startupEntryName"), false);
-                if (Bool(cfg, "cleanupEnvironmentVariable")) { string name = Str(cfg, "environmentVariable"); if (!string.IsNullOrEmpty(name)) { Environment.SetEnvironmentVariable(name, null, EnvironmentVariableTarget.User); EnvironmentNotifier.Broadcast(); } }
                 string systemPathEntry = Str(cfg, "systemPathEntry");
                 if (!string.IsNullOrEmpty(systemPathEntry)) SystemPath.Remove(systemPathEntry);
                 Registry.CurrentUser.DeleteSubKeyTree(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + product, false);
