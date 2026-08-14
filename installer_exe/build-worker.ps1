@@ -289,7 +289,7 @@ end;
     }
 
     $cscArgs = '/nologo /target:winexe /optimize+ '
-    $cscArgs += '/reference:System.Windows.Forms.dll '
+    $cscArgs += '/reference:System.Windows.Forms.dll /reference:System.Drawing.dll '
     $cscArgs += "/resource:`"$payloadExe`",setup-payload.exe "
     if (Test-Path $manifestPath) { $cscArgs += "/win32manifest:`"$manifestPath`" " }
     if ($iconFile -and (Test-Path $iconFile)) { $cscArgs += "/win32icon:`"$iconFile`" " }

@@ -82,6 +82,13 @@ namespace InstallerApp
         Button quickBtn;
         Button customBtn;
 
+        // Quick path screen
+        Panel quickPathPanel;
+        TextBox quickPathBox;
+        Button quickBrowseBtn;
+        Button quickStartBtn;
+        Button quickBackBtn;
+
         // Custom screen
         Panel customPanel;
         TextBox pathBox;
@@ -250,10 +257,12 @@ namespace InstallerApp
         {
             Text = productName + " | 安装程序";
             Size = new Size(760, 500);
+            MinimumSize = new Size(560, 420);
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.None;
             BackColor = BG;
             DoubleBuffered = true;
+            Resize += (s, e) => LayoutResponsiveControls();
         }
 
         void BuildTitleBar()
@@ -299,6 +308,7 @@ namespace InstallerApp
             closeBtn.FlatAppearance.MouseOverBackColor = ColorTranslator.FromHtml("#e74c3c");
             closeBtn.Click += (s, e) => Close();
             titleBar.Controls.Add(closeBtn);
+            titleBar.Resize += (s, e) => closeBtn.Left = Math.Max(0, titleBar.ClientSize.Width - closeBtn.Width - 6);
 
             Controls.Add(titleBar);
         }
@@ -322,11 +332,14 @@ namespace InstallerApp
             content.Controls.Add(statusLabel);
 
             BuildWelcomePanel();
+            BuildQuickPathPanel();
             BuildCustomPanel();
             BuildInstallPanel();
             BuildCompletePanel();
 
+            content.Resize += (s, e) => LayoutResponsiveControls();
             Controls.Add(content);
+            LayoutResponsiveControls();
         }
 
         void BuildWelcomePanel()
@@ -440,6 +453,36 @@ namespace InstallerApp
             };
 
             return btn;
+        }
+
+        void BuildQuickPathPanel()
+        {
+            quickPathPanel = new Panel { Dock = DockStyle.Fill, BackColor = BG, Visible = false, Padding = new Padding(40, 30, 40, 20) };
+            var heading = new Label { Text = "选择安装路径", Font = TitleFont, ForeColor = Text0, Dock = DockStyle.Top, Height = 30, BackColor = Color.Transparent };
+            var detail = new Label { Text = "快速安装将仅安装基础运行环境。", Font = MainFont, ForeColor = Text2, Dock = DockStyle.Top, Height = 30, BackColor = Color.Transparent };
+            var pathLabel = new Label { Text = "安装路径", Font = MainFont, ForeColor = Text1, Dock = DockStyle.Top, Height = 28, BackColor = Color.Transparent };
+            var pathRow = new Panel { Dock = DockStyle.Top, Height = 38, BackColor = Color.Transparent };
+            quickPathBox = new TextBox { Dock = DockStyle.Fill, Font = MainFont, ForeColor = Text0, BackColor = Surface, BorderStyle = BorderStyle.FixedSingle, Text = selectedPath };
+            quickPathBox.TextChanged += (s, e) => selectedPath = quickPathBox.Text;
+            quickBrowseBtn = new Button { Text = "浏览", Dock = DockStyle.Right, Width = 90, Font = MainFont, ForeColor = Cyan, BackColor = Surface, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+            quickBrowseBtn.FlatAppearance.BorderColor = Border;
+            quickBrowseBtn.Click += (s, e) => { string path; if (BrowseFolder("选择安装路径", selectedPath, out path)) { selectedPath = path; quickPathBox.Text = path; } };
+            pathRow.Controls.Add(quickPathBox);
+            pathRow.Controls.Add(quickBrowseBtn);
+            var actions = new Panel { Dock = DockStyle.Bottom, Height = 48, BackColor = Color.Transparent };
+            quickBackBtn = new Button { Text = "返回", Location = new Point(0, 5), Size = new Size(100, 38), Font = MainFont, ForeColor = Text2, BackColor = Surface, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+            quickBackBtn.FlatAppearance.BorderColor = Border;
+            quickBackBtn.Click += (s, e) => ShowWelcome();
+            quickStartBtn = new Button { Text = "开始安装", Size = new Size(120, 38), Anchor = AnchorStyles.Top | AnchorStyles.Right, Font = MainFont, ForeColor = Color.White, BackColor = Cyan, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+            quickStartBtn.Click += (s, e) => StartQuickInstall();
+            actions.Controls.Add(quickBackBtn);
+            actions.Controls.Add(quickStartBtn);
+            quickPathPanel.Controls.Add(actions);
+            quickPathPanel.Controls.Add(pathRow);
+            quickPathPanel.Controls.Add(pathLabel);
+            quickPathPanel.Controls.Add(detail);
+            quickPathPanel.Controls.Add(heading);
+            content.Controls.Add(quickPathPanel);
         }
 
         void BuildCustomPanel()
@@ -582,6 +625,30 @@ namespace InstallerApp
             actionsPanel.Controls.Add(startInstallBtn);
 
             content.Controls.Add(customPanel);
+        }
+
+        void LayoutResponsiveControls()
+        {
+            if (content == null) return;
+            int width = Math.Max(1, content.ClientSize.Width);
+            int side = Math.Min(40, Math.Max(16, width / 14));
+            int usable = Math.Max(200, width - side * 2);
+            if (welcomePanel != null)
+            {
+                quickBtn.Width = usable; quickBtn.Left = side;
+                customBtn.Width = usable; customBtn.Left = side;
+            }
+            if (quickPathPanel != null)
+            {
+                quickPathPanel.Padding = new Padding(side, 30, side, 20);
+                quickStartBtn.Left = Math.Max(0, quickPathPanel.ClientSize.Width - side * 2 - quickStartBtn.Width);
+            }
+            if (customPanel != null)
+            {
+                var options = pathBox.Parent;
+                options.Padding = new Padding(side, 8, side, 10);
+                startInstallBtn.Left = Math.Max(0, options.ClientSize.Width - side * 2 - startInstallBtn.Width);
+            }
         }
 
         void RenderComponents()
@@ -754,6 +821,7 @@ namespace InstallerApp
         {
             screen = 0;
             welcomePanel.Visible = true;
+            quickPathPanel.Visible = false;
             customPanel.Visible = false;
             installPanel.Visible = false;
             completePanel.Visible = false;
@@ -765,6 +833,7 @@ namespace InstallerApp
             screen = 1;
             RenderComponents();
             welcomePanel.Visible = false;
+            quickPathPanel.Visible = false;
             customPanel.Visible = true;
             installPanel.Visible = false;
             completePanel.Visible = false;
@@ -773,13 +842,15 @@ namespace InstallerApp
 
         void ShowBasePathSelection()
         {
+            screen = 1;
             selectedPath = installPath;
-            string path;
-            if (BrowseFolder("选择安装路径", selectedPath, out path))
-            {
-                selectedPath = path;
-                StartQuickInstall();
-            }
+            quickPathBox.Text = selectedPath;
+            welcomePanel.Visible = false;
+            quickPathPanel.Visible = true;
+            customPanel.Visible = false;
+            installPanel.Visible = false;
+            completePanel.Visible = false;
+            statusLabel.Text = "选择快速安装路径";
         }
 
         void StartQuickInstall()
@@ -805,6 +876,7 @@ namespace InstallerApp
         {
             screen = 2;
             welcomePanel.Visible = false;
+            quickPathPanel.Visible = false;
             customPanel.Visible = false;
             installPanel.Visible = true;
             completePanel.Visible = false;
@@ -849,10 +921,12 @@ namespace InstallerApp
                 }
                 w.ReportProgress(60, "文件复制完成");
 
-                // Shortcuts
-                string exeTarget = !string.IsNullOrEmpty(mainExe) ? Path.Combine(selectedPath, mainExe) : selectedPath;
+                // Shortcuts: mainExe may be a relative path under the copied source directory.
+                string exeTarget = ResolveMainExeTarget();
+                if ((createDesktop || createStartMenu || createStartup) && string.IsNullOrEmpty(exeTarget))
+                    throw new FileNotFoundException("未找到主程序，无法创建快捷方式。请检查 mainExe 和安装包中的文件。", mainExe);
                 Type shellType = Type.GetTypeFromProgID("WScript.Shell");
-                object shell = Activator.CreateInstance(shellType);
+                object shell = (createDesktop || createStartMenu) ? Activator.CreateInstance(shellType) : null;
 
                 if (createStartMenu)
                 {
@@ -925,6 +999,18 @@ namespace InstallerApp
                 e.Result = ex.Message;
                 w.ReportProgress(100, "[错误] " + ex.Message);
             }
+        }
+
+        string ResolveMainExeTarget()
+        {
+            if (string.IsNullOrWhiteSpace(mainExe)) return "";
+            string relativeExe = mainExe.Trim();
+            if (Path.IsPathRooted(relativeExe))
+                throw new InvalidOperationException("mainExe 必须是安装目录内的相对路径。");
+            string installRoot = Path.GetFullPath(selectedPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            string target = Path.GetFullPath(Path.Combine(installRoot, relativeExe));
+            if (!target.StartsWith(installRoot, StringComparison.OrdinalIgnoreCase) || !File.Exists(target)) return "";
+            return target;
         }
 
         void DownloadResource(CompInfo component)
