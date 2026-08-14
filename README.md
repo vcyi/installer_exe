@@ -26,9 +26,7 @@ installer/
     ├── installer-app.cs            # 最终用户安装器源码
     ├── launcher.cs                 # 单文件安装包启动器
     ├── app.manifest                # UAC 清单
-    ├── assets/icon.ico             # 默认图标
-    ├── installer-studio.ps1        # 旧 Web 版入口（兼容保留）
-    └── installer-studio.html       # 旧 Web 版界面（兼容保留）
+    └── assets/icon.ico             # 默认图标
 ```
 
 ## 环境要求
@@ -87,10 +85,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\installer-studio-native.ps
 配置中可为每项资源保留下载地址、解压目标和哈希值。当前已接入最终安装器构建链路的是资源名称、下载地址与必选状态；独立解压路径与 SHA-256 校验字段会随配置保存，尚待接入最终安装执行逻辑后生效。
 
 建议将 1–2 GB 的资源制作为独立压缩包。基础程序随安装包使用 Inno Setup 的 LZMA2 压缩；外部资源应由服务器提供下载，并在后续版本中启用哈希校验、断点续传与安装根目录内的安全解压限制。
-
-## 旧 Web 版
-
-`installer-studio.ps1` 和 `installer-studio.html` 为兼容保留的旧 HTTP/浏览器版本，不再是推荐入口。请优先使用 `installer-studio-native.ps1`。
 
 ## 常见问题
 
