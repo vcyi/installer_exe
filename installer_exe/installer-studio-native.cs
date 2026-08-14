@@ -295,6 +295,18 @@ public class InstallerStudioNative : Form
             catch (Exception ex) { buildState.Text = "状态：读取构建结果失败"; logBox.Text = "[ERROR] " + ex.Message; }
         });
     }
+    // .NET Framework 4 的 ProcessStartInfo 没有 ArgumentList。使用 UTF-16LE 的 -EncodedCommand，
+    // 让每个路径在 PowerShell 脚本块中作为单独的单引号字符串字面量传递，避免空格和 (x86) 被重新解析。
+    string PowerShellSingleQuoted(string value) { return "'" + (value ?? "").Replace("'", "''") + "'"; }
+    string BuildWorkerCommand(string worker, string config, string status, string directory, string innoDirectory)
+    {
+        string command = "& " + PowerShellSingleQuoted(worker) +
+            " -ConfigFile " + PowerShellSingleQuoted(config) +
+            " -StatusFile " + PowerShellSingleQuoted(status) +
+            " -ScriptDir " + PowerShellSingleQuoted(directory) +
+            " -InnoBinDir " + PowerShellSingleQuoted(innoDirectory);
+        return "-NoProfile -ExecutionPolicy Bypass -EncodedCommand " + Convert.ToBase64String(Encoding.Unicode.GetBytes(command));
+    }
     void StartBuild()
     {
         try
@@ -306,7 +318,8 @@ public class InstallerStudioNative : Form
             buildWorker = Path.Combine(scriptDir, "build-worker.ps1"); string config = Path.Combine(scriptDir, "build-config.json"); buildStatusFile = Path.Combine(scriptDir, "build-status.json");
             if (!File.Exists(buildWorker)) throw new FileNotFoundException("未找到 build-worker.ps1", buildWorker);
             SaveConfig(config); WriteBuildStatus("starting", "构建正在启动...");
-            ProcessStartInfo psi = new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File \"" + buildWorker + "\" -ConfigFile \"" + config + "\" -StatusFile \"" + buildStatusFile + "\" -ScriptDir \"" + scriptDir + "\" -InnoBinDir \"" + Path.GetDirectoryName(iscc) + "\"");
+            string innoBinDir = Path.GetDirectoryName(iscc);
+            ProcessStartInfo psi = new ProcessStartInfo("powershell.exe", BuildWorkerCommand(buildWorker, config, buildStatusFile, scriptDir, innoBinDir));
             psi.CreateNoWindow = true; psi.UseShellExecute = false; psi.RedirectStandardError = true; psi.RedirectStandardOutput = true;
             buildProcessError.Length = 0; buildProcess = new Process(); buildProcess.StartInfo = psi; buildProcess.EnableRaisingEvents = true;
             buildProcess.ErrorDataReceived += delegate(object s, DataReceivedEventArgs e) { if (!string.IsNullOrEmpty(e.Data)) lock (buildProcessError) buildProcessError.AppendLine(e.Data); };
