@@ -23,6 +23,7 @@ namespace InstallerApp
         [STAThread]
         static void Main(string[] args)
         {
+            WriteReadyFile(GetReadyFilePath(args));
             bool uninstallRequested = args != null && args.Length > 0 && string.Equals(args[0], "--uninstall", StringComparison.OrdinalIgnoreCase);
             bool uninstallCopy = Path.GetFileNameWithoutExtension(Application.ExecutablePath).EndsWith("-uninstall", StringComparison.OrdinalIgnoreCase);
             if (uninstallRequested || uninstallCopy)
@@ -34,6 +35,33 @@ namespace InstallerApp
             Application.SetCompatibleTextRenderingDefault(false);
             var form = new InstallerForm();
             Application.Run(form);
+        }
+
+        static string GetReadyFilePath(string[] args)
+        {
+            if (args == null) return null;
+            for (int i = 0; i < args.Length - 1; i++)
+            {
+                if (string.Equals(args[i], "--ready-file", StringComparison.OrdinalIgnoreCase)) return args[i + 1];
+            }
+            return null;
+        }
+
+        static void WriteReadyFile(string readyFile)
+        {
+            if (string.IsNullOrEmpty(readyFile)) return;
+            try
+            {
+                string directory = Path.GetDirectoryName(readyFile);
+                if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+                string temporaryFile = readyFile + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                File.WriteAllText(temporaryFile, DateTime.UtcNow.ToString("o"));
+                File.Move(temporaryFile, readyFile);
+            }
+            catch
+            {
+                // 就绪旗标仅用于通知启动器，写入失败不影响安装流程。
+            }
         }
     }
 

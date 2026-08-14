@@ -29,6 +29,7 @@ sealed class PreparationForm : Form
     private readonly System.Windows.Forms.Timer progressTimer = new System.Windows.Forms.Timer { Interval = 40 };
     private string tempDir;
     private string payloadPath;
+    private string readyFilePath;
     private int targetProgress;
     private int smoothValue;
     private DateTime shownAt;
@@ -88,6 +89,7 @@ sealed class PreparationForm : Form
         {
             tempDir = Path.Combine(Path.GetTempPath(), "setup-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(tempDir);
             payloadPath = Path.Combine(tempDir, "setup-payload.exe");
+            readyFilePath = Path.Combine(tempDir, "installer-client.ready");
             using (Stream source = Assembly.GetExecutingAssembly().GetManifestResourceStream("setup-payload.exe"))
             {
                 if (source == null) throw new InvalidDataException("未找到内置安装数据。");
@@ -149,16 +151,9 @@ sealed class PreparationForm : Form
             System.Windows.Forms.Timer detectionTimer = new System.Windows.Forms.Timer { Interval = 200 };
             detectionTimer.Tick += delegate(object sender, EventArgs e)
             {
-                foreach (Process candidate in Process.GetProcessesByName("installer-app"))
+                if (!string.IsNullOrEmpty(readyFilePath) && File.Exists(readyFilePath))
                 {
-                    try
-                    {
-                        if (candidate.StartTime >= payloadLaunchTime.AddSeconds(-2))
-                        {
-                            ((System.Windows.Forms.Timer)sender).Stop(); ((System.Windows.Forms.Timer)sender).Dispose(); Close(); return;
-                        }
-                    }
-                    catch { }
+                    ((System.Windows.Forms.Timer)sender).Stop(); ((System.Windows.Forms.Timer)sender).Dispose(); Close(); return;
                 }
                 if ((DateTime.Now - payloadLaunchTime).TotalSeconds >= 10)
                 {
