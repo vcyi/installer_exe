@@ -225,17 +225,23 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 $iconLine
 [Files]
-Source: "$appExePath"; DestDir: "{tmp}"; Flags: ignoreversion
-Source: "$sourceTemp\*"; DestDir: "{tmp}\source"; Flags: recursesubdirs createallsubdirs ignoreversion
+; 不从随机临时目录执行客户端：部分终端防护策略会阻止 Temp 下的 EXE。
+; 客户端及其 source 载荷固定释放到当前用户 LocalAppData 的 Bootstrap 目录。
+Source: "$appExePath"; DestDir: "{localappdata}\$base\Bootstrap"; Flags: ignoreversion
+Source: "$sourceTemp\*"; DestDir: "{localappdata}\$base\Bootstrap\source"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Code]
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
+  BootstrapDir: String;
+  ReadyFile: String;
 begin
   if CurStep = ssPostInstall then
   begin
-    Exec(ExpandConstant('{tmp}\installer-app.exe'), '--ready-file "' + ExpandConstant('{tmp}\installer-client.ready') + '"', ExpandConstant('{tmp}'), SW_SHOW, ewNoWait, ResultCode);
+    BootstrapDir := ExpandConstant('{localappdata}\$base\Bootstrap');
+    ReadyFile := ExpandConstant('{%TEMP}\installer-ready.flag');
+    Exec(AddBackslash(BootstrapDir) + 'installer-app.exe', '--ready-file "' + ReadyFile + '"', BootstrapDir, SW_SHOW, ewNoWait, ResultCode);
   end;
 end;
 "@

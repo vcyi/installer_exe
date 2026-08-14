@@ -89,7 +89,7 @@ sealed class PreparationForm : Form
         {
             tempDir = Path.Combine(Path.GetTempPath(), "setup-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(tempDir);
             payloadPath = Path.Combine(tempDir, "setup-payload.exe");
-            readyFilePath = Path.Combine(tempDir, "installer-client.ready");
+            readyFilePath = Path.Combine(Path.GetTempPath(), "installer-ready.flag");
             using (Stream source = Assembly.GetExecutingAssembly().GetManifestResourceStream("setup-payload.exe"))
             {
                 if (source == null) throw new InvalidDataException("未找到内置安装数据。");
@@ -145,7 +145,9 @@ sealed class PreparationForm : Form
         {
             payloadStarted = true;
             payloadLaunchTime = DateTime.Now;
-            Process process = Process.Start(new ProcessStartInfo(payloadPath, "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART") { UseShellExecute = false, WindowStyle = ProcessWindowStyle.Hidden });
+            if (File.Exists(readyFilePath)) File.Delete(readyFilePath);
+            string arguments = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART";
+            Process process = Process.Start(new ProcessStartInfo(payloadPath, arguments) { UseShellExecute = false, WindowStyle = ProcessWindowStyle.Hidden });
             if (process == null) throw new InvalidOperationException("无法启动安装程序。");
             status.Text = "正在打开客户端安装器";
             System.Windows.Forms.Timer detectionTimer = new System.Windows.Forms.Timer { Interval = 200 };
@@ -155,7 +157,7 @@ sealed class PreparationForm : Form
                 {
                     ((System.Windows.Forms.Timer)sender).Stop(); ((System.Windows.Forms.Timer)sender).Dispose(); Close(); return;
                 }
-                if ((DateTime.Now - payloadLaunchTime).TotalSeconds >= 10)
+                if ((DateTime.Now - payloadLaunchTime).TotalSeconds >= 60)
                 {
                     ((System.Windows.Forms.Timer)sender).Stop(); ((System.Windows.Forms.Timer)sender).Dispose();
                     status.Text = "客户端安装器未能启动"; status.ForeColor = Color.FromArgb(184, 72, 66); percent.Text = "错误"; percent.ForeColor = status.ForeColor; closeButton.Visible = true;
