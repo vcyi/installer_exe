@@ -29,7 +29,8 @@ public class InstallerStudioNative : Form
     public InstallerStudioNative()
     {
         Text = "Installer Studio Native | 教育部署控制台";
-        StartPosition = FormStartPosition.CenterScreen; MinimumSize = new Size(1060, 700); Size = new Size(1240, 800);
+        // 支持在 1024 x 660 左右的窗口完整显示；内容区域会按页垂直滚动。
+        StartPosition = FormStartPosition.CenterScreen; MinimumSize = new Size(980, 620); Size = new Size(1240, 800);
         Font = new Font("Microsoft YaHei UI", 9F); BackColor = Canvas; ForeColor = TextMain;
         BuildUi();
         statusTimer = new Timer(); statusTimer.Interval = 700; statusTimer.Tick += delegate { PollStatus(); };
@@ -74,8 +75,10 @@ public class InstallerStudioNative : Form
     {
         SuspendLayout();
         Panel shell = new Panel { Dock = DockStyle.Fill, BackColor = Canvas }; Controls.Add(shell);
-        Panel side = new Panel { Dock = DockStyle.Left, Width = 218, BackColor = Surface, Padding = new Padding(16, 20, 16, 18) }; shell.Controls.Add(side);
-        Panel main = new Panel { Dock = DockStyle.Fill, BackColor = Canvas }; shell.Controls.Add(main);
+        Panel side = new Panel { Dock = DockStyle.Left, Width = 218, BackColor = Surface, Padding = new Padding(16, 20, 16, 18) };
+        Panel main = new Panel { Dock = DockStyle.Fill, BackColor = Canvas };
+        // WinForms 按 Z 顺序反向处理停靠控件：先加入 Fill，再加入 Left，避免侧栏覆盖主内容左边缘。
+        shell.Controls.Add(main); shell.Controls.Add(side);
         BuildSidebar(side); BuildHeader(main); BuildPages(main); ResumeLayout(false);
     }
     void BuildSidebar(Panel side)
@@ -109,25 +112,43 @@ public class InstallerStudioNative : Form
     }
     void BuildPages(Panel main)
     {
-        pageTabs = new TabControl { Dock = DockStyle.Fill, Appearance = TabAppearance.FlatButtons, ItemSize = new Size(1, 1), SizeMode = TabSizeMode.Fixed, Multiline = true }; pageTabs.SelectedIndexChanged += delegate { if (pageTabs.SelectedIndex >= 0) SelectPage(pageTabs.SelectedIndex); }; main.Controls.Add(pageTabs);
+        pageTabs = new TabControl { Dock = DockStyle.Fill, Appearance = TabAppearance.FlatButtons, ItemSize = new Size(1, 1), SizeMode = TabSizeMode.Fixed, Multiline = true };
+        pageTabs.SelectedIndexChanged += delegate { if (pageTabs.SelectedIndex >= 0) SelectPage(pageTabs.SelectedIndex); };
+        main.Controls.Add(pageTabs);
+        // Dock 按反向 Z 顺序布局：让标题栏先占据顶部，TabControl 再填充余下空间。
+        main.Controls.SetChildIndex(pageTabs, 0);
         BuildProductPage(); BuildBehaviorPage(); BuildResourcesPage(); BuildLogPage(); SelectPage(0);
     }
     CardPanel PageCard(TabPage page, string title, string caption)
     {
-        CardPanel card = new CardPanel { Dock = DockStyle.Top, AutoSize = true, BackColor = Card, Margin = new Padding(0, 0, 0, 16) }; page.Controls.Add(card);
-        Label cap = LabelText(caption, 8.5F, TextMuted); cap.Dock = DockStyle.Top; card.Controls.Add(cap);
-        Label head = LabelText(title, 12F, TextMain); head.Font = new Font("Microsoft YaHei UI", 12F, FontStyle.Bold); head.Dock = DockStyle.Top; head.Padding = new Padding(0, 0, 0, 7); card.Controls.Add(head); return card;
+        // TabPage 的 AutoScroll 负责纵向溢出；卡片采用显式内容流，避免 Dock + AutoSize 造成标题和表单重叠。
+        CardPanel card = new CardPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, BackColor = Card, Margin = new Padding(0, 0, 0, 16), Padding = new Padding(20) };
+        FlowLayoutPanel content = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, FlowDirection = FlowDirection.TopDown, WrapContents = false, Dock = DockStyle.Top, BackColor = Card, Margin = new Padding(0), Padding = new Padding(0) };
+        Label head = LabelText(title, 12F, TextMain); head.Font = new Font("Microsoft YaHei UI", 12F, FontStyle.Bold); head.Margin = new Padding(0, 0, 0, 5);
+        Label cap = LabelText(caption, 8.5F, TextMuted); cap.Margin = new Padding(0, 0, 0, 12);
+        content.Controls.Add(head); content.Controls.Add(cap); card.Controls.Add(content); page.Controls.Add(card);
+        page.SizeChanged += delegate { content.Width = Math.Max(100, page.ClientSize.Width - card.Padding.Horizontal); };
+        content.Width = Math.Max(100, page.ClientSize.Width - card.Padding.Horizontal);
+        return card;
+    }
+    void AddCardContent(CardPanel card, Control content)
+    {
+        FlowLayoutPanel flow = card.Controls[0] as FlowLayoutPanel;
+        if (flow == null) { card.Controls.Add(content); return; }
+        content.Dock = DockStyle.None; content.Margin = new Padding(0); content.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        flow.Controls.Add(content);
+        flow.SizeChanged += delegate { content.Width = Math.Max(100, flow.ClientSize.Width); };
     }
     void BuildProductPage()
     {
         TabPage product = NewPage("产品与目录"); pageTabs.TabPages.Add(product); CardPanel card = PageCard(product, "产品身份与文件路径", "定义学习产品的发布信息、安装位置和输出目标");
-        TableLayoutPanel p = FormTable(); card.Controls.Add(p); p.Dock = DockStyle.Top;
+        TableLayoutPanel p = FormTable(); AddCardContent(card, p);
         productName = TextField("My Application"); version = TextField("1.0.0"); publisher = TextField(""); subtitle = TextField("安装程序"); sourceDir = TextField(""); outputDir = TextField(scriptDir); installPath = TextField("C:\\Program Files\\My Application"); mainExe = TextField(""); iconPath = TextField(""); scanResult = TextField("尚未扫描"); scanResult.ReadOnly = true;
         AddRow(p, 0, "产品名称 *", productName); AddRow(p, 1, "版本", version); AddRow(p, 2, "发布者", publisher); AddRow(p, 3, "副标题", subtitle); AddRow(p, 4, "基础程序目录 *", BrowseField(sourceDir, true, "")); AddRow(p, 5, "输出目录", BrowseField(outputDir, true, "")); AddRow(p, 6, "默认安装目录", installPath); AddRow(p, 7, "主程序 EXE", mainExe); AddRow(p, 8, "图标文件", BrowseField(iconPath, false, "图标文件 (*.ico)|*.ico|所有文件 (*.*)|*.*")); AddRow(p, 9, "目录扫描", scanResult);
     }
     void BuildBehaviorPage()
     {
-        TabPage behavior = NewPage("安装行为"); pageTabs.TabPages.Add(behavior); CardPanel card = PageCard(behavior, "学习终端部署策略", "控制快捷入口、启动任务、环境变量和卸载清理规则"); TableLayoutPanel bp = FormTable(); bp.Dock = DockStyle.Top; card.Controls.Add(bp);
+        TabPage behavior = NewPage("安装行为"); pageTabs.TabPages.Add(behavior); CardPanel card = PageCard(behavior, "学习终端部署策略", "控制快捷入口、启动任务、环境变量和卸载清理规则"); TableLayoutPanel bp = FormTable(); AddCardContent(card, bp);
         customInstall = Check("允许用户自定义安装（路径与可选组件）", true); desktop = Check("创建桌面快捷方式", true); startMenu = Check("创建开始菜单快捷方式", true); startup = Check("创建当前用户启动项", false); writeEnv = Check("写入当前用户环境变量", false); startupName = TextField(""); startupArgs = TextField(""); envName = TextField(""); envValue = TextField("{app}"); cleanDesktop = Check("卸载时删除桌面快捷方式", true); cleanStartMenu = Check("卸载时删除开始菜单快捷方式", true); cleanStartup = Check("卸载时删除启动项", true); cleanEnv = Check("卸载时删除环境变量", true); cleanInstallDir = Check("卸载时删除安装目录（包括用户生成文件）", false);
         theme = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill, BackColor = Field, ForeColor = TextMain, FlatStyle = FlatStyle.Flat }; theme.Items.AddRange(new object[] { "dark", "light" }); theme.SelectedIndex = 0;
         AddRow(bp, 0, "安装模式", customInstall); AddRow(bp, 1, "桌面快捷方式", desktop); AddRow(bp, 2, "开始菜单", startMenu); AddRow(bp, 3, "启动项", startup); AddRow(bp, 4, "启动项名称", startupName); AddRow(bp, 5, "启动参数", startupArgs); AddRow(bp, 6, "环境变量", writeEnv); AddRow(bp, 7, "变量名称", envName); AddRow(bp, 8, "变量值", envValue); AddRow(bp, 9, "卸载清理", cleanDesktop); AddRow(bp, 10, "", cleanStartMenu); AddRow(bp, 11, "", cleanStartup); AddRow(bp, 12, "", cleanEnv); AddRow(bp, 13, "", cleanInstallDir); AddRow(bp, 14, "安装界面主题", theme);
@@ -135,14 +156,20 @@ public class InstallerStudioNative : Form
     CheckBox Check(string text, bool value) { return new CheckBox { Text = text, Checked = value, AutoSize = true, ForeColor = TextMain, BackColor = Card, FlatStyle = FlatStyle.Flat }; }
     void BuildResourcesPage()
     {
-        TabPage external = NewPage("外部资源"); pageTabs.TabPages.Add(external); CardPanel card = PageCard(external, "课程资源与可选组件", "登记安装时需要下载或解压的教学内容资源"); card.Dock = DockStyle.Fill;
+        TabPage external = NewPage("外部资源"); pageTabs.TabPages.Add(external); CardPanel card = new CardPanel { Dock = DockStyle.Fill, BackColor = Card, Padding = new Padding(20) }; external.Controls.Add(card);
         resources = new DataGridView { Dock = DockStyle.Fill, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, AllowUserToAddRows = true, AllowUserToDeleteRows = true, BackgroundColor = Field, BorderStyle = BorderStyle.None, GridColor = Line, EnableHeadersVisualStyles = false, ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle { BackColor = Surface, ForeColor = Cyan, SelectionBackColor = Surface, Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold) }, DefaultCellStyle = new DataGridViewCellStyle { BackColor = Field, ForeColor = TextMain, SelectionBackColor = Color.FromArgb(25, 73, 91), SelectionForeColor = TextMain }, RowHeadersVisible = false };
-        resources.Columns.Add("name", "名称"); resources.Columns.Add("downloadUrl", "下载 URL"); resources.Columns.Add("extractPath", "解压路径（保留配置）"); resources.Columns.Add(new DataGridViewCheckBoxColumn { Name = "required", HeaderText = "必选" }); resources.Columns.Add("hash", "哈希（保留配置）"); card.Controls.Add(resources);
+        resources.Columns.Add("name", "名称"); resources.Columns.Add("downloadUrl", "下载 URL"); resources.Columns.Add("extractPath", "解压路径（保留配置）"); resources.Columns.Add(new DataGridViewCheckBoxColumn { Name = "required", HeaderText = "必选" }); resources.Columns.Add("hash", "哈希（保留配置）");
+        Label cap = LabelText("登记安装时需要下载或解压的教学内容资源", 8.5F, TextMuted); cap.Dock = DockStyle.Top; cap.Padding = new Padding(0, 0, 0, 12);
+        Label head = LabelText("课程资源与可选组件", 12F, TextMain); head.Font = new Font("Microsoft YaHei UI", 12F, FontStyle.Bold); head.Dock = DockStyle.Top; head.Padding = new Padding(0, 0, 0, 5);
+        card.Controls.Add(resources); card.Controls.Add(cap); card.Controls.Add(head);
     }
     void BuildLogPage()
     {
-        TabPage build = NewPage("构建日志"); pageTabs.TabPages.Add(build); CardPanel card = PageCard(build, "构建执行台", "调用本地 build-worker.ps1 并实时显示安装包生成进度"); card.Dock = DockStyle.Fill;
-        TableLayoutPanel layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, BackColor = Card }; layout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); layout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); layout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); layout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); card.Controls.Add(layout);
+        TabPage build = NewPage("构建日志"); pageTabs.TabPages.Add(build); CardPanel card = new CardPanel { Dock = DockStyle.Fill, BackColor = Card, Padding = new Padding(20) }; build.Controls.Add(card);
+        TableLayoutPanel layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, BackColor = Card }; layout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); layout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); layout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        Label cap = LabelText("调用本地 build-worker.ps1 并实时显示安装包生成进度", 8.5F, TextMuted); cap.Dock = DockStyle.Top; cap.Padding = new Padding(0, 0, 0, 12);
+        Label head = LabelText("构建执行台", 12F, TextMain); head.Font = new Font("Microsoft YaHei UI", 12F, FontStyle.Bold); head.Dock = DockStyle.Top; head.Padding = new Padding(0, 0, 0, 5);
+        card.Controls.Add(layout); card.Controls.Add(cap); card.Controls.Add(head);
         Button go = ActionButton("调用 build-worker.ps1 构建安装包", true); go.Width = 290; go.Click += delegate { StartBuild(); }; buildState = LabelText("状态：空闲", 9F, TextMuted); buildState.Padding = new Padding(0, 12, 0, 4); progress = new ProgressBar { Dock = DockStyle.Top, Height = 12, ForeColor = Cyan, BackColor = Field }; logBox = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(5, 15, 26), ForeColor = Color.FromArgb(170, 225, 237), Font = new Font("Consolas", 9F) }; outputLabel = LabelText("输出：", 9F, TextMuted); outputLabel.Padding = new Padding(0, 8, 0, 0);
         layout.Controls.Add(go, 0, 0); layout.Controls.Add(buildState, 0, 1); layout.Controls.Add(progress, 0, 2); layout.Controls.Add(logBox, 0, 3); layout.Controls.Add(outputLabel, 0, 4);
     }
