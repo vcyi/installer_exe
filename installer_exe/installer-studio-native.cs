@@ -13,8 +13,9 @@ public class InstallerStudioNative : Form
 {
     readonly string scriptDir = AppDomain.CurrentDomain.BaseDirectory;
     readonly JavaScriptSerializer json = new JavaScriptSerializer();
-    readonly Color Canvas = Color.FromArgb(8, 16, 29), Surface = Color.FromArgb(14, 29, 47), Card = Color.FromArgb(20, 40, 62);
-    readonly Color Field = Color.FromArgb(10, 25, 42), Line = Color.FromArgb(39, 73, 101), Cyan = Color.FromArgb(42, 202, 232), TextMain = Color.FromArgb(230, 241, 248), TextMuted = Color.FromArgb(139, 169, 187);
+    // 浅色教育科技主题：暖白画布、洁净卡片与蓝绿色操作强调。
+    readonly Color Canvas = Color.FromArgb(247, 248, 246), Surface = Color.FromArgb(255, 255, 255), Card = Color.FromArgb(255, 255, 255);
+    readonly Color Field = Color.FromArgb(244, 247, 249), Line = Color.FromArgb(218, 226, 232), Cyan = Color.FromArgb(13, 148, 136), TextMain = Color.FromArgb(28, 43, 58), TextMuted = Color.FromArgb(100, 116, 139);
     TextBox productName, version, publisher, subtitle, sourceDir, outputDir, installPath, mainExe, iconPath, envName, envValue, startupName, startupArgs, scanResult;
     CheckBox customInstall, desktop, startMenu, startup, writeEnv, cleanDesktop, cleanStartMenu, cleanStartup, cleanEnv, cleanInstallDir;
     ComboBox theme;
@@ -47,8 +48,8 @@ public class InstallerStudioNative : Form
     TextBox TextField(string value) { return new TextBox { Dock = DockStyle.Fill, Text = value ?? "", BackColor = Field, ForeColor = TextMain, BorderStyle = BorderStyle.FixedSingle, Height = 30 }; }
     Button ActionButton(string text, bool primary)
     {
-        Button b = new Button { Text = text, FlatStyle = FlatStyle.Flat, Height = 32, AutoSize = true, Padding = new Padding(12, 0, 12, 0), BackColor = primary ? Cyan : Surface, ForeColor = primary ? Canvas : TextMain, Cursor = Cursors.Hand };
-        b.FlatAppearance.BorderColor = primary ? Cyan : Line; b.FlatAppearance.MouseOverBackColor = primary ? Color.FromArgb(102, 220, 241) : Card; return b;
+        Button b = new Button { Text = text, FlatStyle = FlatStyle.Flat, Height = 32, AutoSize = true, Padding = new Padding(12, 0, 12, 0), BackColor = primary ? Cyan : Surface, ForeColor = primary ? Color.White : TextMain, Cursor = Cursors.Hand };
+        b.FlatAppearance.BorderColor = primary ? Cyan : Line; b.FlatAppearance.MouseOverBackColor = primary ? Color.FromArgb(15, 118, 110) : Color.FromArgb(238, 246, 247); return b;
     }
     void AddRow(TableLayoutPanel p, int row, string label, Control control)
     {
@@ -69,13 +70,14 @@ public class InstallerStudioNative : Form
     {
         if (pageTabs == null || index < 0 || index >= pageTabs.TabPages.Count) return;
         pageTabs.SelectedIndex = index; headerPage.Text = pageTabs.TabPages[index].Text;
-        for (int i = 0; pageButtons != null && i < pageButtons.Length; i++) { bool selected = i == index; pageButtons[i].BackColor = selected ? Color.FromArgb(22, 68, 91) : Surface; pageButtons[i].ForeColor = selected ? Cyan : TextMuted; pageButtons[i].FlatAppearance.BorderColor = selected ? Cyan : Surface; }
+        for (int i = 0; pageButtons != null && i < pageButtons.Length; i++) { bool selected = i == index; pageButtons[i].BackColor = selected ? Color.FromArgb(229, 246, 243) : Surface; pageButtons[i].ForeColor = selected ? Cyan : TextMuted; pageButtons[i].FlatAppearance.BorderColor = selected ? Color.FromArgb(166, 216, 209) : Surface; }
     }
     void BuildUi()
     {
         SuspendLayout();
         Panel shell = new Panel { Dock = DockStyle.Fill, BackColor = Canvas }; Controls.Add(shell);
         Panel side = new Panel { Dock = DockStyle.Left, Width = 218, BackColor = Surface, Padding = new Padding(16, 20, 16, 18) };
+        side.Paint += delegate(object sender, PaintEventArgs e) { using (Pen p = new Pen(Line)) e.Graphics.DrawLine(p, side.Width - 1, 0, side.Width - 1, side.Height); };
         Panel main = new Panel { Dock = DockStyle.Fill, BackColor = Canvas };
         // WinForms 按 Z 顺序反向处理停靠控件：先加入 Fill，再加入 Left，避免侧栏覆盖主内容左边缘。
         shell.Controls.Add(main); shell.Controls.Add(side);
@@ -88,14 +90,14 @@ public class InstallerStudioNative : Form
         Label edition = LabelText("EDTECH DEPLOYMENT CONSOLE", 7.5F, TextMuted); edition.Location = new Point(18, 82); side.Controls.Add(edition);
         Label nav = LabelText("工作区", 8.5F, TextMuted); nav.Location = new Point(18, 132); side.Controls.Add(nav);
         string[] names = { "01  产品与目录", "02  安装行为", "03  外部资源", "04  构建日志" }; pageButtons = new Button[names.Length];
-        for (int i = 0; i < names.Length; i++) { int pageIndex = i; Button b = new Button { Text = names[i], TextAlign = ContentAlignment.MiddleLeft, FlatStyle = FlatStyle.Flat, FlatAppearance = { BorderSize = 1 }, Width = 186, Height = 42, Location = new Point(16, 158 + i * 48), BackColor = Surface, ForeColor = TextMuted, Cursor = Cursors.Hand }; b.Click += delegate { SelectPage(pageIndex); }; pageButtons[i] = b; side.Controls.Add(b); }
+        for (int i = 0; i < names.Length; i++) { int pageIndex = i; Button b = new Button { Text = names[i], TextAlign = ContentAlignment.MiddleLeft, FlatStyle = FlatStyle.Flat, FlatAppearance = { BorderSize = 1 }, Width = 186, Height = 42, Location = new Point(16, 158 + i * 48), BackColor = Surface, ForeColor = TextMuted, Cursor = Cursors.Hand }; b.FlatAppearance.MouseOverBackColor = Color.FromArgb(241, 248, 247); b.Click += delegate { SelectPage(pageIndex); }; pageButtons[i] = b; side.Controls.Add(b); }
         Panel bottom = new Panel { Dock = DockStyle.Bottom, Height = 105, BackColor = Surface }; side.Controls.Add(bottom);
         Label secure = LabelText("本地构建环境", 9F, TextMain); secure.Location = new Point(2, 12); bottom.Controls.Add(secure);
         Label note = LabelText("配置仅保存于本机\n.NET Framework 4 Compatible", 8F, TextMuted); note.Location = new Point(2, 38); bottom.Controls.Add(note);
     }
     void BuildHeader(Panel main)
     {
-        Panel head = new Panel { Dock = DockStyle.Top, Height = 104, BackColor = Surface, Padding = new Padding(24, 16, 24, 12) }; main.Controls.Add(head);
+        Panel head = new Panel { Dock = DockStyle.Top, Height = 104, BackColor = Surface, Padding = new Padding(24, 16, 24, 12) }; head.Paint += delegate(object sender, PaintEventArgs e) { using (Pen p = new Pen(Line)) e.Graphics.DrawLine(p, 0, head.Height - 1, head.Width, head.Height - 1); }; main.Controls.Add(head);
         headerPage = LabelText("产品与目录", 18F, TextMain); headerPage.Font = new Font("Microsoft YaHei UI", 18F, FontStyle.Bold); headerPage.Location = new Point(24, 16); head.Controls.Add(headerPage);
         headerHint = LabelText("配置你的学习产品安装体验与分发资源", 9F, TextMuted); headerHint.Location = new Point(26, 52); head.Controls.Add(headerHint);
         Button build = ActionButton("开始构建", true); build.Dock = DockStyle.Right; build.Width = 116; build.Click += delegate { StartBuild(); }; head.Controls.Add(build);
@@ -157,7 +159,7 @@ public class InstallerStudioNative : Form
     void BuildResourcesPage()
     {
         TabPage external = NewPage("外部资源"); pageTabs.TabPages.Add(external); CardPanel card = new CardPanel { Dock = DockStyle.Fill, BackColor = Card, Padding = new Padding(20) }; external.Controls.Add(card);
-        resources = new DataGridView { Dock = DockStyle.Fill, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, AllowUserToAddRows = true, AllowUserToDeleteRows = true, BackgroundColor = Field, BorderStyle = BorderStyle.None, GridColor = Line, EnableHeadersVisualStyles = false, ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle { BackColor = Surface, ForeColor = Cyan, SelectionBackColor = Surface, Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold) }, DefaultCellStyle = new DataGridViewCellStyle { BackColor = Field, ForeColor = TextMain, SelectionBackColor = Color.FromArgb(25, 73, 91), SelectionForeColor = TextMain }, RowHeadersVisible = false };
+        resources = new DataGridView { Dock = DockStyle.Fill, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, AllowUserToAddRows = true, AllowUserToDeleteRows = true, BackgroundColor = Field, BorderStyle = BorderStyle.None, GridColor = Line, EnableHeadersVisualStyles = false, ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle { BackColor = Color.FromArgb(237, 246, 245), ForeColor = Cyan, SelectionBackColor = Color.FromArgb(237, 246, 245), Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold) }, DefaultCellStyle = new DataGridViewCellStyle { BackColor = Field, ForeColor = TextMain, SelectionBackColor = Color.FromArgb(218, 241, 238), SelectionForeColor = TextMain }, RowHeadersVisible = false };
         resources.Columns.Add("name", "名称"); resources.Columns.Add("downloadUrl", "下载 URL"); resources.Columns.Add("extractPath", "解压路径（保留配置）"); resources.Columns.Add(new DataGridViewCheckBoxColumn { Name = "required", HeaderText = "必选" }); resources.Columns.Add("hash", "哈希（保留配置）");
         Label cap = LabelText("登记安装时需要下载或解压的教学内容资源", 8.5F, TextMuted); cap.Dock = DockStyle.Top; cap.Padding = new Padding(0, 0, 0, 12);
         Label head = LabelText("课程资源与可选组件", 12F, TextMain); head.Font = new Font("Microsoft YaHei UI", 12F, FontStyle.Bold); head.Dock = DockStyle.Top; head.Padding = new Padding(0, 0, 0, 5);
@@ -170,7 +172,7 @@ public class InstallerStudioNative : Form
         Label cap = LabelText("调用本地 build-worker.ps1 并实时显示安装包生成进度", 8.5F, TextMuted); cap.Dock = DockStyle.Top; cap.Padding = new Padding(0, 0, 0, 12);
         Label head = LabelText("构建执行台", 12F, TextMain); head.Font = new Font("Microsoft YaHei UI", 12F, FontStyle.Bold); head.Dock = DockStyle.Top; head.Padding = new Padding(0, 0, 0, 5);
         card.Controls.Add(layout); card.Controls.Add(cap); card.Controls.Add(head);
-        Button go = ActionButton("调用 build-worker.ps1 构建安装包", true); go.Width = 290; go.Click += delegate { StartBuild(); }; buildState = LabelText("状态：空闲", 9F, TextMuted); buildState.Padding = new Padding(0, 12, 0, 4); progress = new ProgressBar { Dock = DockStyle.Top, Height = 12, ForeColor = Cyan, BackColor = Field }; logBox = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(5, 15, 26), ForeColor = Color.FromArgb(170, 225, 237), Font = new Font("Consolas", 9F) }; outputLabel = LabelText("输出：", 9F, TextMuted); outputLabel.Padding = new Padding(0, 8, 0, 0);
+        Button go = ActionButton("调用 build-worker.ps1 构建安装包", true); go.Width = 290; go.Click += delegate { StartBuild(); }; buildState = LabelText("状态：空闲", 9F, TextMuted); buildState.Padding = new Padding(0, 12, 0, 4); progress = new ProgressBar { Dock = DockStyle.Top, Height = 12, ForeColor = Cyan, BackColor = Field }; logBox = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(241, 247, 247), ForeColor = Color.FromArgb(45, 93, 96), Font = new Font("Consolas", 9F) }; outputLabel = LabelText("输出：", 9F, TextMuted); outputLabel.Padding = new Padding(0, 8, 0, 0);
         layout.Controls.Add(go, 0, 0); layout.Controls.Add(buildState, 0, 1); layout.Controls.Add(progress, 0, 2); layout.Controls.Add(logBox, 0, 3); layout.Controls.Add(outputLabel, 0, 4);
     }
     TableLayoutPanel FormTable() { TableLayoutPanel t = new TableLayoutPanel { AutoSize = true, ColumnCount = 2, Padding = new Padding(0, 5, 0, 0), BackColor = Card }; t.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 145)); t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); return t; }
