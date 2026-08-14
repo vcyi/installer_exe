@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
 using System.Web.Script.Serialization;
@@ -58,11 +59,47 @@ public class InstallerStudioNative : Form
         control.Margin = new Padding(0, 5, 0, 5); control.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         p.Controls.Add(l, 0, row); p.Controls.Add(control, 1, row);
     }
+    [Flags]
+    enum FileOpenOptions : uint { PickFolders = 0x00000020, ForceFileSystem = 0x00000040, PathMustExist = 0x00000800 }
+    [ComImport, Guid("D57C7288-D4AD-4768-BE02-9D969532D960"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IFileOpenDialog
+    {
+        [PreserveSig] int Show(IntPtr parent);
+        void SetFileTypes(uint count, IntPtr filters); void SetFileTypeIndex(uint index); void GetFileTypeIndex(out uint index); void Advise(IntPtr events, out uint cookie); void Unadvise(uint cookie); void SetOptions(FileOpenOptions options); void GetOptions(out FileOpenOptions options); void SetDefaultFolder(IShellItem folder); void SetFolder(IShellItem folder); void GetFolder(out IShellItem folder); void GetCurrentSelection(out IShellItem item); void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string name); void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string name); void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string title); void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string text); void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string text); void GetResult(out IShellItem item);
+    }
+    [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellItem { void BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppv); void GetParent(out IShellItem parent); void GetDisplayName(uint sigdnName, [MarshalAs(UnmanagedType.LPWStr)] out string name); }
+    [ComImport, Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")] class FileOpenDialog { }
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)] static extern void SHCreateItemFromParsingName(string path, IntPtr pbc, ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out IShellItem item);
+
+    string ExistingDirectory(string path) { return !string.IsNullOrEmpty(path) && Directory.Exists(path) ? path : scriptDir; }
+    string InitialDirectoryForFile(string path) { string directory = string.IsNullOrEmpty(path) ? "" : Path.GetDirectoryName(path); return ExistingDirectory(directory); }
+    bool BrowseFolder(string title, string initialDirectory, out string selectedPath)
+    {
+        selectedPath = null; IFileOpenDialog dialog = null;
+        try
+        {
+            dialog = (IFileOpenDialog)new FileOpenDialog(); dialog.SetOptions(FileOpenOptions.PickFolders | FileOpenOptions.ForceFileSystem | FileOpenOptions.PathMustExist); dialog.SetTitle(title);
+            IShellItem folder; Guid iid = typeof(IShellItem).GUID; string initial = ExistingDirectory(initialDirectory); SHCreateItemFromParsingName(initial, IntPtr.Zero, ref iid, out folder); dialog.SetFolder(folder);
+            if (dialog.Show(Handle) != 0) return false;
+            IShellItem result; dialog.GetResult(out result); string path; result.GetDisplayName(0x80058000, out path); selectedPath = path; return true;
+        }
+        catch { return false; }
+        finally { if (dialog != null) Marshal.ReleaseComObject(dialog); }
+    }
+    bool BrowseFile(string title, string initialDirectory, string filter, out string selectedPath)
+    {
+        selectedPath = null; using (OpenFileDialog dialog = new OpenFileDialog()) { dialog.Title = title; dialog.InitialDirectory = ExistingDirectory(initialDirectory); dialog.Filter = filter; dialog.RestoreDirectory = true; if (dialog.ShowDialog(this) != DialogResult.OK) return false; selectedPath = dialog.FileName; return true; }
+    }
+    bool SaveFile(string title, string initialDirectory, string filter, string fileName, out string selectedPath)
+    {
+        selectedPath = null; using (SaveFileDialog dialog = new SaveFileDialog()) { dialog.Title = title; dialog.InitialDirectory = ExistingDirectory(initialDirectory); dialog.Filter = filter; dialog.FileName = fileName; dialog.RestoreDirectory = true; if (dialog.ShowDialog(this) != DialogResult.OK) return false; selectedPath = dialog.FileName; return true; }
+    }
     Control BrowseField(TextBox target, bool folder, string filter)
     {
         Panel p = new Panel { Dock = DockStyle.Fill, Height = 30, BackColor = Color.Transparent }; target.Dock = DockStyle.Fill;
         Button b = ActionButton("浏览", false); b.Dock = DockStyle.Right; b.Width = 72; b.AutoSize = false;
-        b.Click += delegate { if (folder) { using (FolderBrowserDialog d = new FolderBrowserDialog()) { d.SelectedPath = target.Text; if (d.ShowDialog(this) == DialogResult.OK) target.Text = d.SelectedPath; } } else { using (OpenFileDialog d = new OpenFileDialog()) { d.Filter = filter; if (d.ShowDialog(this) == DialogResult.OK) target.Text = d.FileName; } } };
+        b.Click += delegate { string selected; bool accepted = folder ? BrowseFolder("选择目录", target.Text, out selected) : BrowseFile("选择文件", InitialDirectoryForFile(target.Text), filter, out selected); if (accepted) target.Text = selected; };
         p.Controls.Add(target); p.Controls.Add(b); return p;
     }
     TabPage NewPage(string text) { return new TabPage(text) { Padding = new Padding(22), AutoScroll = true, BackColor = Canvas, ForeColor = TextMain }; }
@@ -189,8 +226,8 @@ public class InstallerStudioNative : Form
         return new Dictionary<string, object> { {"productName",productName.Text}, {"version",version.Text}, {"publisher",publisher.Text}, {"subtitle",subtitle.Text}, {"sourceDir",sourceDir.Text}, {"outputDir",outputDir.Text}, {"installPath",installPath.Text}, {"mainExe",mainExe.Text}, {"iconPath",iconPath.Text}, {"allowCustomInstall",customInstall.Checked}, {"allowInstallPathSelection",allowInstallPathSelection.Checked}, {"addToSystemPath",addToSystemPath.Checked}, {"createDesktopShortcut",desktop.Checked}, {"createStartMenuShortcut",startMenu.Checked}, {"createStartupEntry",startup.Checked}, {"startupEntryName",startupName.Text}, {"startupArguments",startupArgs.Text}, {"writeEnvVars",writeEnv.Checked}, {"environmentVariable",envName.Text}, {"environmentValue",envValue.Text}, {"cleanupDesktopShortcut",cleanDesktop.Checked}, {"cleanupStartMenuShortcut",cleanStartMenu.Checked}, {"cleanupStartupEntry",cleanStartup.Checked}, {"cleanupEnvironmentVariable",cleanEnv.Checked}, {"cleanupInstallDirectory",cleanInstallDir.Checked}, {"theme",theme.Text}, {"optionalComponents",list} };
     }
     void SaveConfig(string path) { File.WriteAllText(path, json.Serialize(Config()), new UTF8Encoding(false)); }
-    void ImportConfig() { using (OpenFileDialog d = new OpenFileDialog()) { d.Filter = "JSON 文件 (*.json)|*.json"; if (d.ShowDialog(this) == DialogResult.OK) LoadConfig(d.FileName, true); } }
-    void ExportConfig() { using (SaveFileDialog d = new SaveFileDialog()) { d.Filter = "JSON 文件 (*.json)|*.json"; d.FileName = "build-config.json"; if (d.ShowDialog(this) == DialogResult.OK) { SaveConfig(d.FileName); MessageBox.Show("配置已导出。", Text); } } }
+    void ImportConfig() { string path; if (BrowseFile("导入 build-config.json", scriptDir, "JSON 文件 (*.json)|*.json|所有文件 (*.*)|*.*", out path)) LoadConfig(path, true); }
+    void ExportConfig() { string path; if (SaveFile("导出 build-config.json", scriptDir, "JSON 文件 (*.json)|*.json|所有文件 (*.*)|*.*", "build-config.json", out path)) { SaveConfig(path); MessageBox.Show("配置已导出。", Text); } }
     void ScanDirectory() { try { if (!Directory.Exists(sourceDir.Text)) throw new DirectoryNotFoundException(sourceDir.Text); long bytes = 0; int count = 0; foreach (string f in Directory.GetFiles(sourceDir.Text, "*", SearchOption.AllDirectories)) { count++; bytes += new FileInfo(f).Length; } scanResult.Text = string.Format("{0:N0} 个文件，{1:N2} MB", count, bytes / 1024.0 / 1024.0); } catch (Exception ex) { scanResult.Text = "扫描失败：" + ex.Message; } }
     void StartBuild() { try { if (!Directory.Exists(sourceDir.Text)) { MessageBox.Show("请选择有效的基础程序目录。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; } string worker = Path.Combine(scriptDir, "build-worker.ps1"), config = Path.Combine(scriptDir, "build-config.json"), status = Path.Combine(scriptDir, "build-status.json"); if (!File.Exists(worker)) throw new FileNotFoundException("未找到 build-worker.ps1", worker); SaveConfig(config); File.WriteAllText(status, json.Serialize(new Dictionary<string, object> { {"status","starting"}, {"progress",0}, {"log",new string[] { "Starting build process..." }}, {"output",""}, {"error",""} }), new UTF8Encoding(false)); string inno = Environment.GetEnvironmentVariable("INNO_SETUP_PATH") ?? @"C:\Program Files (x86)\Inno Setup 6"; ProcessStartInfo psi = new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File \"" + worker + "\" -ConfigFile \"" + config + "\" -StatusFile \"" + status + "\" -ScriptDir \"" + scriptDir + "\" -InnoBinDir \"" + inno + "\""); psi.CreateNoWindow = true; psi.UseShellExecute = false; Process.Start(psi); logBox.Clear(); progress.Value = 0; buildState.Text = "状态：构建已启动"; SelectPage(3); statusTimer.Start(); } catch (Exception ex) { MessageBox.Show("无法启动构建：" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); } }
     void PollStatus() { try { string statusFile = Path.Combine(scriptDir, "build-status.json"); if (!File.Exists(statusFile)) return; IDictionary<string, object> d = json.DeserializeObject(File.ReadAllText(statusFile, Encoding.UTF8)) as IDictionary<string, object>; string state = S(d,"status"); int value = 0; Int32.TryParse(S(d,"progress"), out value); progress.Value = Math.Max(0, Math.Min(100, value)); buildState.Text = "状态：" + state + "（" + value + "%）"; outputLabel.Text = "输出：" + S(d,"output"); logBox.Text = ""; IEnumerable logs = Get(d,"log") as IEnumerable; if (logs != null) foreach (object line in logs) logBox.AppendText(Convert.ToString(line) + Environment.NewLine); logBox.SelectionStart = logBox.TextLength; logBox.ScrollToCaret(); if (state == "done" || state == "error") statusTimer.Stop(); } catch { } }
