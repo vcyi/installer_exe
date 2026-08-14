@@ -235,7 +235,7 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
-    Exec(ExpandConstant('{tmp}\installer-app.exe'), '', ExpandConstant('{tmp}'), SW_SHOW, ewWaitUntilTerminated, ResultCode);
+    Exec(ExpandConstant('{tmp}\installer-app.exe'), '', ExpandConstant('{tmp}'), SW_SHOW, ewNoWait, ResultCode);
   end;
 end;
 "@

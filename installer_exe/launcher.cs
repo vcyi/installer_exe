@@ -26,7 +26,15 @@ sealed class PreparationForm : Form
     private readonly Label percent = new Label();
     private readonly ThinProgressBar progress = new ThinProgressBar();
     private readonly Button closeButton = new Button();
+    private readonly System.Windows.Forms.Timer progressTimer = new System.Windows.Forms.Timer { Interval = 40 };
     private string tempDir;
+    private string payloadPath;
+    private int targetProgress;
+    private int smoothValue;
+    private DateTime shownAt;
+    private DateTime payloadLaunchTime;
+    private bool extractionCompleted;
+    private bool payloadStarted;
 
     public PreparationForm()
     {
@@ -44,7 +52,11 @@ sealed class PreparationForm : Form
         progress.Location = new Point(34, 207); progress.Size = new Size(388, 5); progress.Value = 0; card.Controls.Add(progress);
         card.Controls.Add(CreateLabel("请稍候，安装数据正在安全准备中", new Point(34, 225), new Size(380, 24), 9f, FontStyle.Regular, Color.FromArgb(150, 160, 161)));
         closeButton.Text = "关闭"; closeButton.Visible = false; closeButton.Location = new Point(346, 218); closeButton.Size = new Size(76, 30); closeButton.FlatStyle = FlatStyle.Flat; closeButton.FlatAppearance.BorderColor = Color.FromArgb(19, 157, 151); closeButton.ForeColor = Color.FromArgb(15, 141, 136); closeButton.Click += delegate { Close(); }; card.Controls.Add(closeButton);
-        Shown += delegate { worker.RunWorkerAsync(); }; worker.DoWork += ExtractAndRun; worker.ProgressChanged += UpdateProgress; worker.RunWorkerCompleted += Completed;
+        Shown += delegate { shownAt = DateTime.Now; progressTimer.Start(); worker.RunWorkerAsync(); };
+        progressTimer.Tick += AdvanceVisualProgress;
+        worker.DoWork += ExtractPayload;
+        worker.ProgressChanged += UpdateTargetProgress;
+        worker.RunWorkerCompleted += ExtractionCompleted;
     }
 
     private void AddLogo(Panel card)
@@ -70,18 +82,18 @@ sealed class PreparationForm : Form
     protected override CreateParams CreateParams { get { var cp = base.CreateParams; cp.ClassStyle |= 0x00020000; return cp; } }
     private static Label CreateLabel(string text, Point location, Size size, float fontSize, FontStyle style, Color color) { return new Label { Text = text, Location = location, Size = size, Font = new Font("Microsoft YaHei UI", fontSize, style), ForeColor = color }; }
 
-    private void ExtractAndRun(object sender, DoWorkEventArgs e)
+    private void ExtractPayload(object sender, DoWorkEventArgs e)
     {
         try
         {
             tempDir = Path.Combine(Path.GetTempPath(), "setup-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(tempDir);
-            string tempPath = Path.Combine(tempDir, "setup-payload.exe");
+            payloadPath = Path.Combine(tempDir, "setup-payload.exe");
             using (Stream source = Assembly.GetExecutingAssembly().GetManifestResourceStream("setup-payload.exe"))
             {
                 if (source == null) throw new InvalidDataException("未找到内置安装数据。");
                 long total = source.Length, copied = 0, lastCopied = -1; int lastPercent = -1; DateTime lastReport = DateTime.MinValue;
                 byte[] buffer = new byte[64 * 1024];
-                using (FileStream destination = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                using (FileStream destination = new FileStream(payloadPath, FileMode.Create, FileAccess.Write, FileShare.None))
                 {
                     int read;
                     while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
@@ -93,29 +105,74 @@ sealed class PreparationForm : Form
                     }
                 }
             }
-            worker.ReportProgress(100, "安装数据已准备完成（100%），正在打开客户端安装器");
-            Process process = Process.Start(new ProcessStartInfo(tempPath) { UseShellExecute = false, WindowStyle = ProcessWindowStyle.Normal });
-            if (process == null) throw new InvalidOperationException("无法启动安装程序。");
-            DateTime launchTime = DateTime.Now;
-            while (!process.HasExited)
-            {
-                foreach (Process candidate in Process.GetProcessesByName("installer-app"))
-                {
-                    try { if (candidate.StartTime >= launchTime.AddSeconds(-2)) { e.Result = true; return; } } catch { }
-                }
-                Thread.Sleep(200);
-            }
-            throw new InvalidOperationException("客户端安装器未能启动。");
         }
         catch (Exception ex) { e.Result = ex; }
     }
-    private void UpdateProgress(object sender, ProgressChangedEventArgs e) { progress.Value = Math.Max(0, Math.Min(100, e.ProgressPercentage)); percent.Text = progress.Value + "%"; status.Text = e.UserState as string ?? ("正在准备安装（" + progress.Value + "%）"); }
-    private void Completed(object sender, RunWorkerCompletedEventArgs e)
+    private void UpdateTargetProgress(object sender, ProgressChangedEventArgs e)
+    {
+        targetProgress = Math.Max(0, Math.Min(100, e.ProgressPercentage));
+    }
+    private void ExtractionCompleted(object sender, RunWorkerCompletedEventArgs e)
     {
         Exception error = e.Result as Exception;
-        if (error == null && e.Result is bool) { Close(); return; }
-        status.Text = "安装数据准备失败"; status.ForeColor = Color.FromArgb(184, 72, 66); percent.Text = "错误"; percent.ForeColor = status.ForeColor; progress.Value = 0; closeButton.Visible = true;
-        MessageBox.Show(this, "无法准备安装数据。请确认安装包完整后重新下载并运行。\r\n\r\n" + (error == null ? "客户端安装器未能启动。" : error.Message), "安装未能启动", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        if (error != null)
+        {
+            progressTimer.Stop(); status.Text = "安装数据准备失败"; status.ForeColor = Color.FromArgb(184, 72, 66); percent.Text = "错误"; percent.ForeColor = status.ForeColor; progress.Value = 0; closeButton.Visible = true;
+            MessageBox.Show(this, "无法准备安装数据。请确认安装包完整后重新下载并运行。\r\n\r\n" + error.Message, "安装未能启动", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        targetProgress = 100;
+        extractionCompleted = true;
+    }
+    private void AdvanceVisualProgress(object sender, EventArgs e)
+    {
+        if (smoothValue < targetProgress)
+        {
+            smoothValue = Math.Min(targetProgress, smoothValue + 1);
+            progress.Value = smoothValue; percent.Text = smoothValue + "%";
+            status.Text = smoothValue < 100 ? "正在解压安装数据（" + smoothValue + "%）" : "安装数据已准备完成（100%），正在打开客户端安装器";
+        }
+        if (extractionCompleted && !payloadStarted && smoothValue == 100 && (DateTime.Now - shownAt).TotalMilliseconds >= 1200)
+        {
+            StartPayload();
+        }
+    }
+    private void StartPayload()
+    {
+        try
+        {
+            payloadStarted = true;
+            payloadLaunchTime = DateTime.Now;
+            Process process = Process.Start(new ProcessStartInfo(payloadPath, "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART") { UseShellExecute = false, WindowStyle = ProcessWindowStyle.Hidden });
+            if (process == null) throw new InvalidOperationException("无法启动安装程序。");
+            status.Text = "正在打开客户端安装器";
+            System.Windows.Forms.Timer detectionTimer = new System.Windows.Forms.Timer { Interval = 200 };
+            detectionTimer.Tick += delegate(object sender, EventArgs e)
+            {
+                foreach (Process candidate in Process.GetProcessesByName("installer-app"))
+                {
+                    try
+                    {
+                        if (candidate.StartTime >= payloadLaunchTime.AddSeconds(-2))
+                        {
+                            ((System.Windows.Forms.Timer)sender).Stop(); ((System.Windows.Forms.Timer)sender).Dispose(); Close(); return;
+                        }
+                    }
+                    catch { }
+                }
+                if ((DateTime.Now - payloadLaunchTime).TotalSeconds >= 10)
+                {
+                    ((System.Windows.Forms.Timer)sender).Stop(); ((System.Windows.Forms.Timer)sender).Dispose();
+                    status.Text = "客户端安装器未能启动"; status.ForeColor = Color.FromArgb(184, 72, 66); percent.Text = "错误"; percent.ForeColor = status.ForeColor; closeButton.Visible = true;
+                }
+            };
+            detectionTimer.Start();
+        }
+        catch (Exception ex)
+        {
+            status.Text = "客户端安装器未能启动"; status.ForeColor = Color.FromArgb(184, 72, 66); percent.Text = "错误"; percent.ForeColor = status.ForeColor; closeButton.Visible = true;
+            MessageBox.Show(this, "无法启动安装程序。\r\n\r\n" + ex.Message, "安装未能启动", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
     private static GraphicsPath RoundedRectangle(Rectangle bounds, int radius) { int diameter = radius * 2; var path = new GraphicsPath(); path.AddArc(bounds.X, bounds.Y, diameter, diameter, 180, 90); path.AddArc(bounds.Right - diameter, bounds.Y, diameter, diameter, 270, 90); path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90); path.AddArc(bounds.X, bounds.Bottom - diameter, diameter, diameter, 90, 90); path.CloseFigure(); return path; }
 }
