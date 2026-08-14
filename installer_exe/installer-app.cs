@@ -102,17 +102,20 @@ namespace InstallerApp
         // Installation
         BackgroundWorker worker;
 
-        // Colors
-        static readonly Color BG = ColorTranslator.FromHtml("#070b16");
-        static readonly Color BG2 = ColorTranslator.FromHtml("#0b1120");
-        static readonly Color Surface = ColorTranslator.FromHtml("#0d1426");
-        static readonly Color Cyan = ColorTranslator.FromHtml("#00e5ff");
-        static readonly Color CyanDim = ColorTranslator.FromHtml("#00b8d4");
-        static readonly Color Text0 = ColorTranslator.FromHtml("#f0f4ff");
-        static readonly Color Text1 = ColorTranslator.FromHtml("#c4d0e8");
-        static readonly Color Text2 = ColorTranslator.FromHtml("#7a8ba8");
-        static readonly Color Border = ColorTranslator.FromHtml("#1a2540");
+        // 客户端统一使用浅色主题，避免配置为 light 时仍沿用深色配色。
+        static readonly Color BG = ColorTranslator.FromHtml("#f7f8f6");
+        static readonly Color BG2 = ColorTranslator.FromHtml("#ffffff");
+        static readonly Color Surface = ColorTranslator.FromHtml("#ffffff");
+        static readonly Color Cyan = ColorTranslator.FromHtml("#0d9488");
+        static readonly Color CyanDim = ColorTranslator.FromHtml("#0f766e");
+        static readonly Color Text0 = ColorTranslator.FromHtml("#1c2b3a");
+        static readonly Color Text1 = ColorTranslator.FromHtml("#334155");
+        static readonly Color Text2 = ColorTranslator.FromHtml("#64748b");
+        static readonly Color Border = ColorTranslator.FromHtml("#dae2e8");
         static readonly Color Emerald = ColorTranslator.FromHtml("#10b981");
+        static readonly Color Error = ColorTranslator.FromHtml("#dc2626");
+        bool installSucceeded = true;
+        Panel completeIconPanel;
         static readonly Font MainFont = new Font("Microsoft YaHei", 9F);
         static readonly Font TitleFont = new Font("Microsoft YaHei", 11F, FontStyle.Bold);
         static readonly Font BigFont = new Font("Microsoft YaHei", 20F, FontStyle.Bold);
@@ -193,6 +196,51 @@ namespace InstallerApp
         {
             if (d.ContainsKey(key) && d[key] is bool) return (bool)d[key];
             return def;
+        }
+
+        [Flags]
+        enum FileOpenOptions : uint { PickFolders = 0x00000020, ForceFileSystem = 0x00000040, PathMustExist = 0x00000800 }
+
+        [ComImport, Guid("D57C7288-D4AD-4768-BE02-9D969532D960"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface IFileOpenDialog
+        {
+            [PreserveSig] int Show(IntPtr parent);
+            void SetFileTypes(uint count, IntPtr filters); void SetFileTypeIndex(uint index); void GetFileTypeIndex(out uint index); void Advise(IntPtr events, out uint cookie); void Unadvise(uint cookie); void SetOptions(FileOpenOptions options); void GetOptions(out FileOpenOptions options); void SetDefaultFolder(IShellItem folder); void SetFolder(IShellItem folder); void GetFolder(out IShellItem folder); void GetCurrentSelection(out IShellItem item); void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string name); void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string name); void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string title); void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string text); void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string text); void GetResult(out IShellItem item);
+        }
+
+        [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface IShellItem { void BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppv); void GetParent(out IShellItem parent); void GetDisplayName(uint sigdnName, [MarshalAs(UnmanagedType.LPWStr)] out string name); }
+
+        [ComImport, Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")] class FileOpenDialog { }
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+        static extern void SHCreateItemFromParsingName(string path, IntPtr pbc, ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out IShellItem item);
+
+        bool BrowseFolder(string title, string initialDirectory, out string selected)
+        {
+            selected = null;
+            IFileOpenDialog dialog = null;
+            try
+            {
+                dialog = (IFileOpenDialog)new FileOpenDialog();
+                dialog.SetOptions(FileOpenOptions.PickFolders | FileOpenOptions.ForceFileSystem | FileOpenOptions.PathMustExist);
+                dialog.SetTitle(title);
+                string initial = !string.IsNullOrEmpty(initialDirectory) && Directory.Exists(initialDirectory) ? initialDirectory : Environment.GetFolderPath(Environment.SpecialFolder.MyComputer);
+                IShellItem folder; Guid iid = typeof(IShellItem).GUID;
+                SHCreateItemFromParsingName(initial, IntPtr.Zero, ref iid, out folder);
+                dialog.SetFolder(folder);
+                if (dialog.Show(Handle) != 0) return false;
+                IShellItem result; string path;
+                dialog.GetResult(out result); result.GetDisplayName(0x80058000, out path);
+                selected = path;
+                return !string.IsNullOrEmpty(selected);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("无法打开文件夹选择窗口: " + ex.Message, "选择安装路径", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+            finally { if (dialog != null) Marshal.ReleaseComObject(dialog); }
         }
 
         void SetupForm()
@@ -297,7 +345,7 @@ namespace InstallerApp
                     var path = RoundRect(new Rectangle(0, 0, 64, 64), 14);
                     g.FillPath(brush, path);
                 }
-                using (var brush = new SolidBrush(Color.FromArgb(7, 11, 22)))
+                using (var brush = new SolidBrush(Color.White))
                 {
                     var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
                     g.DrawString(productName.Substring(0, 1), new Font("Microsoft YaHei", 24F, FontStyle.Bold), brush, new RectangleF(0, 0, 64, 64), sf);
@@ -361,7 +409,7 @@ namespace InstallerApp
                 Size = new Size(680, 80),
                 FlatStyle = FlatStyle.Flat,
                 Cursor = Cursors.Hand,
-                BackColor = primary ? Color.FromArgb(0, 229, 255, 20) : Surface,
+                BackColor = primary ? Color.FromArgb(229, 246, 243) : Surface,
                 ForeColor = Text0,
                 TextAlign = ContentAlignment.MiddleLeft,
                 Font = MainFont,
@@ -369,7 +417,7 @@ namespace InstallerApp
             };
             btn.FlatAppearance.BorderSize = 1;
             btn.FlatAppearance.BorderColor = primary ? Cyan : Border;
-            btn.FlatAppearance.MouseOverBackColor = Color.FromArgb(0, 229, 255, 30);
+            btn.FlatAppearance.MouseOverBackColor = primary ? Color.FromArgb(209, 234, 229) : Color.FromArgb(244, 247, 249);
 
             btn.Paint += (s, e) =>
             {
@@ -445,15 +493,11 @@ namespace InstallerApp
             browseBtn.FlatAppearance.BorderColor = Border;
             browseBtn.Click += (s, e) =>
             {
-                using (var dialog = new FolderBrowserDialog { Description = "选择安装路径", ShowNewFolderButton = true })
+                string path;
+                if (BrowseFolder("选择安装路径", selectedPath, out path))
                 {
-                    if (!string.IsNullOrEmpty(selectedPath))
-                        dialog.SelectedPath = selectedPath;
-                    if (dialog.ShowDialog() == DialogResult.OK)
-                    {
-                        selectedPath = dialog.SelectedPath;
-                        pathBox.Text = selectedPath;
-                    }
+                    selectedPath = path;
+                    pathBox.Text = selectedPath;
                 }
             };
             customPanel.Controls.Add(browseBtn);
@@ -503,7 +547,7 @@ namespace InstallerApp
                 Location = new Point(560, 400),
                 Size = new Size(120, 38),
                 Font = MainFont,
-                ForeColor = Color.FromArgb(7, 11, 22),
+                ForeColor = Color.White,
                 BackColor = Cyan,
                 FlatStyle = FlatStyle.Flat,
                 Cursor = Cursors.Hand
@@ -608,28 +652,36 @@ namespace InstallerApp
         {
             completePanel = new Panel { Dock = DockStyle.Fill, BackColor = BG, Visible = false };
 
-            var iconPanel = new Panel
+            completeIconPanel = new Panel
             {
                 Size = new Size(72, 72),
                 Location = new Point(344, 80),
                 BackColor = Color.Transparent
             };
-            iconPanel.Paint += (s, e) =>
+            completeIconPanel.Paint += (s, e) =>
             {
                 var g = e.Graphics;
+                Color iconColor = installSucceeded ? Emerald : Error;
                 g.SmoothingMode = SmoothingMode.AntiAlias;
-                using (var brush = new SolidBrush(Color.FromArgb(16, 185, 129, 40)))
+                using (var brush = new SolidBrush(Color.FromArgb(iconColor.R, iconColor.G, iconColor.B, 35)))
                     g.FillEllipse(brush, new Rectangle(0, 0, 72, 72));
-                using (var pen = new Pen(Emerald, 3))
+                using (var pen = new Pen(iconColor, 3))
                     g.DrawEllipse(pen, new Rectangle(2, 2, 68, 68));
-                // Checkmark
-                using (var pen = new Pen(Emerald, 4))
+                using (var pen = new Pen(iconColor, 4))
                 {
-                    g.DrawLine(pen, 22, 38, 32, 48);
-                    g.DrawLine(pen, 32, 48, 52, 26);
+                    if (installSucceeded)
+                    {
+                        g.DrawLine(pen, 22, 38, 32, 48);
+                        g.DrawLine(pen, 32, 48, 52, 26);
+                    }
+                    else
+                    {
+                        g.DrawLine(pen, 25, 25, 47, 47);
+                        g.DrawLine(pen, 47, 25, 25, 47);
+                    }
                 }
             };
-            completePanel.Controls.Add(iconPanel);
+            completePanel.Controls.Add(completeIconPanel);
 
             completeLabel = new Label
             {
@@ -661,7 +713,7 @@ namespace InstallerApp
                 Location = new Point(310, 300),
                 Size = new Size(140, 42),
                 Font = MainFont,
-                ForeColor = Color.FromArgb(7, 11, 22),
+                ForeColor = Color.White,
                 BackColor = Cyan,
                 FlatStyle = FlatStyle.Flat,
                 Cursor = Cursors.Hand
@@ -696,13 +748,11 @@ namespace InstallerApp
         void ShowBasePathSelection()
         {
             selectedPath = installPath;
-            using (var dialog = new FolderBrowserDialog { Description = "选择安装路径", ShowNewFolderButton = true, SelectedPath = selectedPath })
+            string path;
+            if (BrowseFolder("选择安装路径", selectedPath, out path))
             {
-                if (dialog.ShowDialog(this) == DialogResult.OK)
-                {
-                    selectedPath = dialog.SelectedPath;
-                    StartQuickInstall();
-                }
+                selectedPath = path;
+                StartQuickInstall();
             }
         }
 
@@ -850,6 +900,10 @@ namespace InstallerApp
 
         void DownloadResource(CompInfo component)
         {
+            // 使用数值常量以保持 .NET Framework 4 编译；TLS 1.1/1.2 枚举名在较新框架才公开。
+            const SecurityProtocolType Tls11 = (SecurityProtocolType)768;
+            const SecurityProtocolType Tls12 = (SecurityProtocolType)3072;
+            ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls | Tls11 | Tls12;
             string targetDir = SafeInstallSubdirectory(selectedPath, component.extractPath);
             if (!Directory.Exists(targetDir)) Directory.CreateDirectory(targetDir);
             string uriFileName;
@@ -857,7 +911,21 @@ namespace InstallerApp
             catch { uriFileName = ""; }
             if (string.IsNullOrEmpty(uriFileName)) uriFileName = System.Text.RegularExpressions.Regex.Replace(component.name, @"[^\w.-]", "_") + ".dat";
             string downloadFile = Path.Combine(targetDir, uriFileName);
-            using (var client = new WebClient()) client.DownloadFile(component.downloadUrl, downloadFile);
+            try
+            {
+                using (var client = new WebClient())
+                {
+                    // 使用 Windows/IE 系统代理设置，并向集成身份验证代理传递当前用户凭据。
+                    client.Proxy = WebRequest.DefaultWebProxy;
+                    if (client.Proxy != null) client.Proxy.Credentials = CredentialCache.DefaultCredentials;
+                    client.DownloadFile(component.downloadUrl, downloadFile);
+                }
+            }
+            catch (WebException ex)
+            {
+                if (File.Exists(downloadFile)) File.Delete(downloadFile);
+                throw new InvalidOperationException(DescribeDownloadError(component.downloadUrl, ex), ex);
+            }
             if (!string.IsNullOrEmpty(component.sha256) && !Sha256Matches(downloadFile, component.sha256))
             {
                 File.Delete(downloadFile);
@@ -868,6 +936,26 @@ namespace InstallerApp
                 ExtractZipSafely(downloadFile, targetDir);
                 File.Delete(downloadFile);
             }
+        }
+
+        static string DescribeDownloadError(string url, WebException ex)
+        {
+            string detail = "下载失败: " + url + "\r\n状态: " + ex.Status + "\r\n原因: " + ex.Message;
+            HttpWebResponse response = ex.Response as HttpWebResponse;
+            if (response != null)
+            {
+                detail += "\r\nHTTP 状态: " + (int)response.StatusCode + " " + response.StatusDescription;
+                try
+                {
+                    using (var reader = new StreamReader(response.GetResponseStream()))
+                    {
+                        string body = reader.ReadToEnd();
+                        if (!string.IsNullOrEmpty(body)) detail += "\r\n服务端响应: " + body.Substring(0, Math.Min(body.Length, 1024));
+                    }
+                }
+                catch { }
+            }
+            return detail;
         }
 
         static string SafeInstallSubdirectory(string installDirectory, string relativePath)
@@ -953,18 +1041,13 @@ namespace InstallerApp
             screen = 3;
             installPanel.Visible = false;
             completePanel.Visible = true;
-            statusLabel.Text = "安装完成";
-            if (e.Error != null)
+            installSucceeded = e.Error == null && !(e.Result is string);
+            statusLabel.Text = installSucceeded ? "安装完成" : "安装失败";
+            if (!installSucceeded)
             {
                 completeLabel.Text = "安装出现问题";
-                completeLabel.ForeColor = ColorTranslator.FromHtml("#ef4444");
-                completeDetail.Text = e.Error.Message;
-            }
-            else if (e.Result is string)
-            {
-                completeLabel.Text = "安装出现问题";
-                completeLabel.ForeColor = ColorTranslator.FromHtml("#ef4444");
-                completeDetail.Text = (string)e.Result;
+                completeLabel.ForeColor = Error;
+                completeDetail.Text = e.Error != null ? e.Error.Message : (string)e.Result;
             }
             else
             {
@@ -972,6 +1055,7 @@ namespace InstallerApp
                 completeLabel.ForeColor = Text0;
                 completeDetail.Text = productName + " 已成功安装到您的计算机。";
             }
+            completeIconPanel.Invalidate();
         }
 
         GraphicsPath RoundRect(Rectangle r, int radius)
