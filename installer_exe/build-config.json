@@ -9,6 +9,8 @@
   "mainExe": "TestApp.exe",
   "iconPath": "",
   "allowCustomInstall": true,
+  "allowInstallPathSelection": true,
+  "addToSystemPath": true,
   "createDesktopShortcut": true,
   "createStartMenuShortcut": true,
   "createStartupEntry": false,
@@ -28,16 +30,22 @@
     {
       "name": "基础教学资源包",
       "downloadUrl": "https://example.com/base.zip",
+      "extractPath": "resources\\base",
+      "sha256": "",
       "required": true
     },
     {
       "name": "学科题库数据包",
       "downloadUrl": "https://example.com/bank.zip",
+      "extractPath": "resources\\bank",
+      "sha256": "",
       "required": false
     },
     {
       "name": "多媒体素材库",
       "downloadUrl": "https://example.com/media.zip",
+      "extractPath": "resources\\media",
+      "sha256": "",
       "required": false
     }
   ]

@@ -48,6 +48,8 @@ try {
     $installPath = [string]$config.installPath; if (-not $installPath) { $installPath = 'C:\Program Files\' + $name }
     $mainExe = [string]$config.mainExe
     $allowCustom = if ($null -eq $config.allowCustomInstall) { $true } else { [bool]$config.allowCustomInstall }
+    $allowInstallPathSelection = [bool]$config.allowInstallPathSelection
+    $addToSystemPath = [bool]$config.addToSystemPath
     $createDesktop = [bool]$config.createDesktopShortcut
     $createStartMenu = [bool]$config.createStartMenuShortcut
     $createStartup = [bool]$config.createStartupEntry
@@ -105,6 +107,8 @@ try {
         installPath = $installPath
         mainExe = $mainExe
         allowCustomInstall = $allowCustom
+        allowInstallPathSelection = $allowInstallPathSelection
+        addToSystemPath = $addToSystemPath
         createDesktopShortcut = $createDesktop
         createStartMenuShortcut = $createStartMenu
         createStartupEntry = $createStartup
@@ -120,7 +124,7 @@ try {
         cleanupInstallDirectory = $cleanupInstallDir
         stubMB = $stubMB
         optionalComponents = @($components | ForEach-Object {
-            @{ name=$_.name; downloadUrl=$_.downloadUrl; required=[bool]$_.required }
+            @{ name=$_.name; downloadUrl=$_.downloadUrl; extractPath=[string]$_.extractPath; sha256=[string]$_.sha256; required=[bool]$_.required }
         })
     }
     $configJsonStr = $configObj | ConvertTo-Json -Depth 5 -Compress
@@ -149,7 +153,7 @@ try {
     if (-not $csc) { throw 'C# compiler (csc.exe) not found' }
 
     $appExePath = Join-Path $buildTemp 'installer-app.exe'
-    $cscArgs = '/nologo /target:winexe /optimize+ /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll /out:"' + $appExePath + '" "' + $csPath + '"'
+    $cscArgs = '/nologo /target:winexe /optimize+ /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll /out:"' + $appExePath + '" "' + $csPath + '"'
     Add-Log "Compiling: csc $cscArgs"
 
     $cscPsi = New-Object System.Diagnostics.ProcessStartInfo

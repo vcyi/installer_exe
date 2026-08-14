@@ -4,6 +4,9 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
+using System.IO.Compression;
+using System.Security.Cryptography;
+using System.Runtime.InteropServices;
 using System.Drawing.Drawing2D;
 using System.IO;
 using System.Net;
@@ -41,6 +44,8 @@ namespace InstallerApp
         string installPath = "";
         string mainExe = "";
         bool allowCustomInstall = true;
+        bool allowInstallPathSelection = false;
+        bool addToSystemPath = false;
         bool createDesktop = true;
         bool createStartMenu = true;
         bool createStartup = false;
@@ -136,6 +141,8 @@ namespace InstallerApp
                 installPath = GetStr(cfg, "installPath", @"C:\Program Files\" + productName);
                 mainExe = GetStr(cfg, "mainExe", "");
                 allowCustomInstall = GetBool(cfg, "allowCustomInstall", true);
+                allowInstallPathSelection = GetBool(cfg, "allowInstallPathSelection", false);
+                addToSystemPath = GetBool(cfg, "addToSystemPath", false);
                 createDesktop = GetBool(cfg, "createDesktopShortcut", true);
                 createStartMenu = GetBool(cfg, "createStartMenuShortcut", true);
                 createStartup = GetBool(cfg, "createStartupEntry", false);
@@ -167,6 +174,8 @@ namespace InstallerApp
                             {
                                 name = GetStr(d, "name", ""),
                                 downloadUrl = GetStr(d, "downloadUrl", ""),
+                                extractPath = GetStr(d, "extractPath", ""),
+                                sha256 = GetStr(d, "sha256", ""),
                                 required = GetBool(d, "required", false)
                             });
                         }
@@ -336,9 +345,9 @@ namespace InstallerApp
             welcomePanel.Controls.Add(subtitleLabel);
 
             // Quick install button
-            quickBtn = CreateActionButton("快速安装", "仅安装基础运行环境，使用默认设置", true);
+            quickBtn = CreateActionButton("快速安装", allowInstallPathSelection ? "仅安装基础运行环境，可选择安装路径" : "仅安装基础运行环境，使用默认设置", true);
             quickBtn.Location = new Point(40, 190);
-            quickBtn.Click += (s, e) => StartQuickInstall();
+            quickBtn.Click += (s, e) => { if (allowInstallPathSelection) ShowBasePathSelection(); else StartQuickInstall(); };
             welcomePanel.Controls.Add(quickBtn);
 
             // Custom install button
@@ -690,11 +699,23 @@ namespace InstallerApp
             statusLabel.Text = "配置安装选项";
         }
 
-        void StartQuickInstall()
+        void ShowBasePathSelection()
         {
             selectedPath = installPath;
+            using (var dialog = new FolderBrowserDialog { Description = "选择安装路径", ShowNewFolderButton = true, SelectedPath = selectedPath })
+            {
+                if (dialog.ShowDialog(this) == DialogResult.OK)
+                {
+                    selectedPath = dialog.SelectedPath;
+                    StartQuickInstall();
+                }
+            }
+        }
+
+        void StartQuickInstall()
+        {
+            if (string.IsNullOrEmpty(selectedPath)) selectedPath = installPath;
             selectedComps.Clear();
-            foreach (var c in components) if (c.required) selectedComps.Add(c.name);
             BeginInstall();
         }
 
@@ -794,17 +815,26 @@ namespace InstallerApp
                 }
 
                 // Current-user environment variable; avoids requiring administrator rights.
+                string resolvedEnvironmentValue = string.IsNullOrEmpty(envVal) ? selectedPath : envVal.Replace("{app}", selectedPath);
                 if (writeEnv && !string.IsNullOrEmpty(envVar))
                 {
-                    string val = string.IsNullOrEmpty(envVal) ? selectedPath : envVal.Replace("{app}", selectedPath);
-                    Environment.SetEnvironmentVariable(envVar, val, EnvironmentVariableTarget.User);
+                    Environment.SetEnvironmentVariable(envVar, resolvedEnvironmentValue, EnvironmentVariableTarget.User);
+                    EnvironmentNotifier.Broadcast();
                     w.ReportProgress(75, "设置环境变量: " + envVar);
                 }
 
-                WriteUninstallManifest(exeTarget);
+                string systemPathEntry = "";
+                if (addToSystemPath)
+                {
+                    systemPathEntry = writeEnv && !string.IsNullOrEmpty(envVar) ? resolvedEnvironmentValue : selectedPath;
+                    if (!SystemPath.Add(systemPathEntry)) systemPathEntry = "";
+                    w.ReportProgress(76, string.IsNullOrEmpty(systemPathEntry) ? "系统 Path 已存在相同项，未重复添加" : "已加入系统 Path: " + systemPathEntry);
+                }
+
+                WriteUninstallManifest(exeTarget, systemPathEntry);
                 w.ReportProgress(77, "写入卸载清理信息");
 
-                // Download components
+                // Download selected external resources to validated paths below the install directory.
                 var toDownload = new List<CompInfo>();
                 foreach (var name in selectedComps)
                     foreach (var c in components)
@@ -813,25 +843,13 @@ namespace InstallerApp
 
                 if (toDownload.Count > 0)
                 {
-                    string dlDir = Path.Combine(selectedPath, "downloads");
-                    if (!Directory.Exists(dlDir)) Directory.CreateDirectory(dlDir);
-                    int dlBase = 75, dlRange = 20;
+                    int dlBase = 77, dlRange = 20;
                     for (int i = 0; i < toDownload.Count; i++)
                     {
                         var c = toDownload[i];
                         w.ReportProgress(dlBase, "下载: " + c.name);
-                        try
-                        {
-                            string fn = System.Text.RegularExpressions.Regex.Replace(c.name, @"[^\w]", "_") + ".dat";
-                            string dest = Path.Combine(dlDir, fn);
-                            using (var client = new WebClient())
-                                client.DownloadFile(c.downloadUrl, dest);
-                            w.ReportProgress(dlBase + (int)((float)(i + 1) / toDownload.Count * dlRange), "已下载: " + c.name);
-                        }
-                        catch (Exception ex)
-                        {
-                            w.ReportProgress(dlBase, "下载失败: " + c.name + " - " + ex.Message);
-                        }
+                        DownloadResource(c);
+                        w.ReportProgress(dlBase + (int)((float)(i + 1) / toDownload.Count * dlRange), "已处理: " + c.name);
                     }
                 }
 
@@ -844,7 +862,69 @@ namespace InstallerApp
             }
         }
 
-        void WriteUninstallManifest(string exeTarget)
+        void DownloadResource(CompInfo component)
+        {
+            string targetDir = SafeInstallSubdirectory(selectedPath, component.extractPath);
+            if (!Directory.Exists(targetDir)) Directory.CreateDirectory(targetDir);
+            string uriFileName;
+            try { uriFileName = Path.GetFileName(new Uri(component.downloadUrl).LocalPath); }
+            catch { uriFileName = ""; }
+            if (string.IsNullOrEmpty(uriFileName)) uriFileName = System.Text.RegularExpressions.Regex.Replace(component.name, @"[^\w.-]", "_") + ".dat";
+            string downloadFile = Path.Combine(targetDir, uriFileName);
+            using (var client = new WebClient()) client.DownloadFile(component.downloadUrl, downloadFile);
+            if (!string.IsNullOrEmpty(component.sha256) && !Sha256Matches(downloadFile, component.sha256))
+            {
+                File.Delete(downloadFile);
+                throw new InvalidOperationException("SHA-256 校验失败: " + component.name);
+            }
+            if (string.Equals(Path.GetExtension(downloadFile), ".zip", StringComparison.OrdinalIgnoreCase))
+            {
+                ExtractZipSafely(downloadFile, targetDir);
+                File.Delete(downloadFile);
+            }
+        }
+
+        static string SafeInstallSubdirectory(string installDirectory, string relativePath)
+        {
+            if (string.IsNullOrEmpty(relativePath)) return installDirectory;
+            if (Path.IsPathRooted(relativePath)) throw new InvalidOperationException("资源目标路径必须是相对安装目录的路径。");
+            string root = Path.GetFullPath(installDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            string target = Path.GetFullPath(Path.Combine(root, relativePath));
+            if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("资源目标路径不能包含 .. 或逃逸安装目录。");
+            return target;
+        }
+
+        static bool Sha256Matches(string filePath, string expected)
+        {
+            string normalized = expected.Replace("-", "").Trim();
+            using (var sha = SHA256.Create())
+            using (var stream = File.OpenRead(filePath))
+            {
+                byte[] hash = sha.ComputeHash(stream);
+                var actual = new System.Text.StringBuilder(hash.Length * 2);
+                for (int i = 0; i < hash.Length; i++) actual.Append(hash[i].ToString("x2"));
+                return string.Equals(actual.ToString(), normalized, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        static void ExtractZipSafely(string zipFile, string targetDirectory)
+        {
+            string root = Path.GetFullPath(targetDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            using (var archive = ZipFile.OpenRead(zipFile))
+            {
+                foreach (var entry in archive.Entries)
+                {
+                    string destination = Path.GetFullPath(Path.Combine(root, entry.FullName));
+                    if (!destination.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("ZIP 包含越界路径: " + entry.FullName);
+                    if (string.IsNullOrEmpty(entry.Name)) { if (!Directory.Exists(destination)) Directory.CreateDirectory(destination); continue; }
+                    string directory = Path.GetDirectoryName(destination);
+                    if (!Directory.Exists(directory)) Directory.CreateDirectory(directory);
+                    entry.ExtractToFile(destination, true);
+                }
+            }
+        }
+
+        void WriteUninstallManifest(string exeTarget, string systemPathEntry)
         {
             string uninstallExe = Path.Combine(selectedPath, productName + "-uninstall.exe");
             File.Copy(Application.ExecutablePath, uninstallExe, true);
@@ -855,6 +935,7 @@ namespace InstallerApp
             manifest["startMenuDirectory"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), productName);
             manifest["startupEntryName"] = string.IsNullOrEmpty(startupName) ? productName : startupName;
             manifest["environmentVariable"] = envVar;
+            manifest["systemPathEntry"] = systemPathEntry;
             manifest["cleanupDesktopShortcut"] = cleanupDesktop;
             manifest["cleanupStartMenuShortcut"] = cleanupStartMenu;
             manifest["cleanupStartupEntry"] = cleanupStartup;
@@ -946,7 +1027,9 @@ namespace InstallerApp
                 if (Bool(cfg, "cleanupDesktopShortcut")) { string p = Str(cfg, "desktopShortcut"); if (File.Exists(p)) File.Delete(p); }
                 if (Bool(cfg, "cleanupStartMenuShortcut")) { string p = Str(cfg, "startMenuDirectory"); if (Directory.Exists(p)) Directory.Delete(p, true); }
                 if (Bool(cfg, "cleanupStartupEntry")) Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run").DeleteValue(Str(cfg, "startupEntryName"), false);
-                if (Bool(cfg, "cleanupEnvironmentVariable")) { string name = Str(cfg, "environmentVariable"); if (!string.IsNullOrEmpty(name)) Environment.SetEnvironmentVariable(name, null, EnvironmentVariableTarget.User); }
+                if (Bool(cfg, "cleanupEnvironmentVariable")) { string name = Str(cfg, "environmentVariable"); if (!string.IsNullOrEmpty(name)) { Environment.SetEnvironmentVariable(name, null, EnvironmentVariableTarget.User); EnvironmentNotifier.Broadcast(); } }
+                string systemPathEntry = Str(cfg, "systemPathEntry");
+                if (!string.IsNullOrEmpty(systemPathEntry)) SystemPath.Remove(systemPathEntry);
                 Registry.CurrentUser.DeleteSubKeyTree(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + product, false);
                 bool removeDir = Bool(cfg, "cleanupInstallDirectory");
                 MessageBox.Show(removeDir ? "卸载清理已完成，安装目录将在关闭后删除。" : "卸载清理已完成，安装目录已保留。", "卸载完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -960,7 +1043,55 @@ namespace InstallerApp
     {
         public string name;
         public string downloadUrl;
+        public string extractPath;
+        public string sha256;
         public bool required;
+    }
+
+    static class SystemPath
+    {
+        const string EnvironmentKey = @"SYSTEM\CurrentControlSet\Control\Session Manager\Environment";
+        public static bool Add(string value) { return Update(value, true); }
+        public static bool Remove(string value) { return Update(value, false); }
+        static bool Update(string value, bool add)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return false;
+            bool changed = false;
+            bool found = false;
+            using (RegistryKey key = Registry.LocalMachine.OpenSubKey(EnvironmentKey, true))
+            {
+                if (key == null) throw new InvalidOperationException("无法打开系统环境变量注册表项，需要管理员权限。");
+                string current = Convert.ToString(key.GetValue("Path", ""));
+                string[] parts = current.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+                var values = new List<string>();
+                foreach (string part in parts)
+                {
+                    string item = part.Trim();
+                    if (string.IsNullOrEmpty(item)) continue;
+                    if (string.Equals(item, value.Trim(), StringComparison.OrdinalIgnoreCase)) { found = true; if (!add) { changed = true; continue; } }
+                    bool duplicate = false; foreach (string existing in values) if (string.Equals(existing, item, StringComparison.OrdinalIgnoreCase)) { duplicate = true; break; }
+                    if (!duplicate) values.Add(item); else changed = true;
+                }
+                if (add && !found) { values.Add(value.Trim()); changed = true; }
+                if (changed) key.SetValue("Path", string.Join(";", values.ToArray()), RegistryValueKind.ExpandString);
+            }
+            if (changed) EnvironmentNotifier.Broadcast();
+            return add ? !found : changed;
+        }
+    }
+
+    static class EnvironmentNotifier
+    {
+        const int HWND_BROADCAST = 0xffff;
+        const int WM_SETTINGCHANGE = 0x001a;
+        const int SMTO_ABORTIFHUNG = 0x0002;
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        static extern IntPtr SendMessageTimeout(IntPtr hWnd, int Msg, IntPtr wParam, string lParam, int flags, int timeout, out IntPtr result);
+        public static void Broadcast()
+        {
+            IntPtr ignored;
+            SendMessageTimeout(new IntPtr(HWND_BROADCAST), WM_SETTINGCHANGE, IntPtr.Zero, "Environment", SMTO_ABORTIFHUNG, 5000, out ignored);
+        }
     }
 
     class Win32
