@@ -47,11 +47,20 @@ try {
     $theme = [string]$config.theme;          if (-not $theme) { $theme = 'dark' }
     $installPath = [string]$config.installPath; if (-not $installPath) { $installPath = 'C:\Program Files\' + $name }
     $mainExe = [string]$config.mainExe
+    $allowCustom = if ($null -eq $config.allowCustomInstall) { $true } else { [bool]$config.allowCustomInstall }
     $createDesktop = [bool]$config.createDesktopShortcut
     $createStartMenu = [bool]$config.createStartMenuShortcut
+    $createStartup = [bool]$config.createStartupEntry
+    $startupName = [string]$config.startupEntryName
+    $startupArgs = [string]$config.startupArguments
     $writeEnv = [bool]$config.writeEnvVars
     $envVarName = [string]$config.environmentVariable
     $envVarValue = [string]$config.environmentValue
+    $cleanupDesktop = if ($null -eq $config.cleanupDesktopShortcut) { $true } else { [bool]$config.cleanupDesktopShortcut }
+    $cleanupStartMenu = if ($null -eq $config.cleanupStartMenuShortcut) { $true } else { [bool]$config.cleanupStartMenuShortcut }
+    $cleanupStartup = if ($null -eq $config.cleanupStartupEntry) { $true } else { [bool]$config.cleanupStartupEntry }
+    $cleanupEnv = if ($null -eq $config.cleanupEnvironmentVariable) { $true } else { [bool]$config.cleanupEnvironmentVariable }
+    $cleanupInstallDir = [bool]$config.cleanupInstallDirectory
     if (-not $envVarValue) { $envVarValue = '' }
 
     # Calculate stub size
@@ -95,11 +104,20 @@ try {
         subtitle = $subtitle
         installPath = $installPath
         mainExe = $mainExe
+        allowCustomInstall = $allowCustom
         createDesktopShortcut = $createDesktop
         createStartMenuShortcut = $createStartMenu
+        createStartupEntry = $createStartup
+        startupEntryName = $startupName
+        startupArguments = $startupArgs
         writeEnvVars = $writeEnv
         environmentVariable = $envVarName
         environmentValue = $envVarValue
+        cleanupDesktopShortcut = $cleanupDesktop
+        cleanupStartMenuShortcut = $cleanupStartMenu
+        cleanupStartupEntry = $cleanupStartup
+        cleanupEnvironmentVariable = $cleanupEnv
+        cleanupInstallDirectory = $cleanupInstallDir
         stubMB = $stubMB
         optionalComponents = @($components | ForEach-Object {
             @{ name=$_.name; downloadUrl=$_.downloadUrl; required=[bool]$_.required }
@@ -304,7 +322,7 @@ end;
     $output = $launcherExe
     $progress = 100
     Add-Log 'BUILD COMPLETE'
-    Add-Log "Output: $exePath"
+    Add-Log "Output: $launcherExe"
 
     # Clean up temp
     Remove-Item -Recurse -Force $buildTemp -ErrorAction SilentlyContinue

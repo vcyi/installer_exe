@@ -12,8 +12,8 @@ public class InstallerStudioNative : Form
 {
     readonly string scriptDir = AppDomain.CurrentDomain.BaseDirectory;
     readonly JavaScriptSerializer json = new JavaScriptSerializer();
-    TextBox productName, version, publisher, subtitle, sourceDir, outputDir, installPath, mainExe, iconPath, envName, envValue, scanResult;
-    CheckBox desktop, startMenu, writeEnv;
+    TextBox productName, version, publisher, subtitle, sourceDir, outputDir, installPath, mainExe, iconPath, envName, envValue, startupName, startupArgs, scanResult;
+    CheckBox customInstall, desktop, startMenu, startup, writeEnv, cleanDesktop, cleanStartMenu, cleanStartup, cleanEnv, cleanInstallDir;
     ComboBox theme;
     DataGridView resources;
     RichTextBox logBox;
@@ -78,11 +78,18 @@ public class InstallerStudioNative : Form
 
         TabPage behavior = NewPage("安装行为"); tabs.TabPages.Add(behavior);
         TableLayoutPanel bp = FormTable(); behavior.Controls.Add(bp);
+        customInstall = new CheckBox { Text = "允许用户自定义安装（路径与可选组件）", Checked = true, AutoSize = true };
         desktop = new CheckBox { Text = "创建桌面快捷方式", Checked = true, AutoSize = true };
         startMenu = new CheckBox { Text = "创建开始菜单快捷方式", Checked = true, AutoSize = true };
-        writeEnv = new CheckBox { Text = "写入环境变量", AutoSize = true };
-        envName = TextField(""); envValue = TextField("{app}"); theme = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill }; theme.Items.AddRange(new object[] { "dark", "light" }); theme.SelectedIndex = 0;
-        AddRow(bp, 0, "快捷方式", desktop); AddRow(bp, 1, "开始菜单", startMenu); AddRow(bp, 2, "环境变量", writeEnv); AddRow(bp, 3, "变量名称", envName); AddRow(bp, 4, "变量值", envValue); AddRow(bp, 5, "安装界面主题", theme);
+        startup = new CheckBox { Text = "创建当前用户启动项", AutoSize = true };
+        writeEnv = new CheckBox { Text = "写入当前用户环境变量", AutoSize = true };
+        startupName = TextField(""); startupArgs = TextField(""); envName = TextField(""); envValue = TextField("{app}"); theme = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill }; theme.Items.AddRange(new object[] { "dark", "light" }); theme.SelectedIndex = 0;
+        cleanDesktop = new CheckBox { Text = "卸载时删除桌面快捷方式", Checked = true, AutoSize = true };
+        cleanStartMenu = new CheckBox { Text = "卸载时删除开始菜单快捷方式", Checked = true, AutoSize = true };
+        cleanStartup = new CheckBox { Text = "卸载时删除启动项", Checked = true, AutoSize = true };
+        cleanEnv = new CheckBox { Text = "卸载时删除环境变量", Checked = true, AutoSize = true };
+        cleanInstallDir = new CheckBox { Text = "卸载时删除安装目录（包括用户生成文件）", AutoSize = true };
+        AddRow(bp, 0, "安装模式", customInstall); AddRow(bp, 1, "桌面快捷方式", desktop); AddRow(bp, 2, "开始菜单", startMenu); AddRow(bp, 3, "启动项", startup); AddRow(bp, 4, "启动项名称", startupName); AddRow(bp, 5, "启动参数", startupArgs); AddRow(bp, 6, "环境变量", writeEnv); AddRow(bp, 7, "变量名称", envName); AddRow(bp, 8, "变量值", envValue); AddRow(bp, 9, "卸载清理", cleanDesktop); AddRow(bp, 10, "", cleanStartMenu); AddRow(bp, 11, "", cleanStartup); AddRow(bp, 12, "", cleanEnv); AddRow(bp, 13, "", cleanInstallDir); AddRow(bp, 14, "安装界面主题", theme);
 
         TabPage external = NewPage("外部资源"); tabs.TabPages.Add(external);
         resources = new DataGridView { Dock = DockStyle.Fill, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, AllowUserToAddRows = true, AllowUserToDeleteRows = true };
@@ -108,7 +115,8 @@ public class InstallerStudioNative : Form
             if (!File.Exists(path)) { if (showMessage) MessageBox.Show("文件不存在：" + path); return; }
             IDictionary<string, object> d = json.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)) as IDictionary<string, object>;
             productName.Text = S(d,"productName"); version.Text = S(d,"version"); publisher.Text = S(d,"publisher"); subtitle.Text = S(d,"subtitle"); sourceDir.Text = S(d,"sourceDir"); outputDir.Text = S(d,"outputDir"); installPath.Text = S(d,"installPath"); mainExe.Text = S(d,"mainExe"); iconPath.Text = S(d,"iconPath");
-            desktop.Checked = B(d,"createDesktopShortcut"); startMenu.Checked = B(d,"createStartMenuShortcut"); writeEnv.Checked = B(d,"writeEnvVars"); envName.Text = S(d,"environmentVariable"); envValue.Text = S(d,"environmentValue");
+            customInstall.Checked = !d.ContainsKey("allowCustomInstall") || B(d,"allowCustomInstall"); desktop.Checked = B(d,"createDesktopShortcut"); startMenu.Checked = B(d,"createStartMenuShortcut"); startup.Checked = B(d,"createStartupEntry"); writeEnv.Checked = B(d,"writeEnvVars"); startupName.Text = S(d,"startupEntryName"); startupArgs.Text = S(d,"startupArguments"); envName.Text = S(d,"environmentVariable"); envValue.Text = S(d,"environmentValue");
+            cleanDesktop.Checked = !d.ContainsKey("cleanupDesktopShortcut") || B(d,"cleanupDesktopShortcut"); cleanStartMenu.Checked = !d.ContainsKey("cleanupStartMenuShortcut") || B(d,"cleanupStartMenuShortcut"); cleanStartup.Checked = !d.ContainsKey("cleanupStartupEntry") || B(d,"cleanupStartupEntry"); cleanEnv.Checked = !d.ContainsKey("cleanupEnvironmentVariable") || B(d,"cleanupEnvironmentVariable"); cleanInstallDir.Checked = B(d,"cleanupInstallDirectory");
             int themeIndex = theme.FindStringExact(S(d,"theme")); theme.SelectedIndex = themeIndex >= 0 ? themeIndex : 0; resources.Rows.Clear();
             IEnumerable list = Get(d,"optionalComponents") as IEnumerable; if (list != null) foreach (object item in list) { IDictionary<string, object> r = item as IDictionary<string, object>; if (r != null) resources.Rows.Add(S(r,"name"), S(r,"downloadUrl"), S(r,"extractPath"), B(r,"required"), S(r,"hash")); }
             if (showMessage) MessageBox.Show("已导入配置。", Text);
@@ -118,7 +126,7 @@ public class InstallerStudioNative : Form
     {
         List<Dictionary<string, object>> list = new List<Dictionary<string, object>>();
         foreach (DataGridViewRow row in resources.Rows) if (!row.IsNewRow) { string name = Convert.ToString(row.Cells["name"].Value ?? ""); string url = Convert.ToString(row.Cells["downloadUrl"].Value ?? ""); if (name.Length > 0 || url.Length > 0) list.Add(new Dictionary<string, object> { {"name",name}, {"downloadUrl",url}, {"extractPath",Convert.ToString(row.Cells["extractPath"].Value ?? "")}, {"required",Convert.ToBoolean(row.Cells["required"].Value ?? false)}, {"hash",Convert.ToString(row.Cells["hash"].Value ?? "")} }); }
-        return new Dictionary<string, object> { {"productName",productName.Text}, {"version",version.Text}, {"publisher",publisher.Text}, {"subtitle",subtitle.Text}, {"sourceDir",sourceDir.Text}, {"outputDir",outputDir.Text}, {"installPath",installPath.Text}, {"mainExe",mainExe.Text}, {"iconPath",iconPath.Text}, {"createDesktopShortcut",desktop.Checked}, {"createStartMenuShortcut",startMenu.Checked}, {"writeEnvVars",writeEnv.Checked}, {"environmentVariable",envName.Text}, {"environmentValue",envValue.Text}, {"theme",theme.Text}, {"optionalComponents",list} };
+        return new Dictionary<string, object> { {"productName",productName.Text}, {"version",version.Text}, {"publisher",publisher.Text}, {"subtitle",subtitle.Text}, {"sourceDir",sourceDir.Text}, {"outputDir",outputDir.Text}, {"installPath",installPath.Text}, {"mainExe",mainExe.Text}, {"iconPath",iconPath.Text}, {"allowCustomInstall",customInstall.Checked}, {"createDesktopShortcut",desktop.Checked}, {"createStartMenuShortcut",startMenu.Checked}, {"createStartupEntry",startup.Checked}, {"startupEntryName",startupName.Text}, {"startupArguments",startupArgs.Text}, {"writeEnvVars",writeEnv.Checked}, {"environmentVariable",envName.Text}, {"environmentValue",envValue.Text}, {"cleanupDesktopShortcut",cleanDesktop.Checked}, {"cleanupStartMenuShortcut",cleanStartMenu.Checked}, {"cleanupStartupEntry",cleanStartup.Checked}, {"cleanupEnvironmentVariable",cleanEnv.Checked}, {"cleanupInstallDirectory",cleanInstallDir.Checked}, {"theme",theme.Text}, {"optionalComponents",list} };
     }
     void SaveConfig(string path) { File.WriteAllText(path, json.Serialize(Config()), new UTF8Encoding(false)); }
     void ImportConfig() { using (OpenFileDialog d = new OpenFileDialog()) { d.Filter = "JSON 文件 (*.json)|*.json"; if (d.ShowDialog(this) == DialogResult.OK) LoadConfig(d.FileName, true); } }

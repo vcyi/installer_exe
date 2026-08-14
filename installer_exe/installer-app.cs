@@ -10,14 +10,20 @@ using System.Net;
 using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 namespace InstallerApp
 {
     class Program
     {
         [STAThread]
-        static void Main()
+        static void Main(string[] args)
         {
+            if (args != null && args.Length > 0 && string.Equals(args[0], "--uninstall", StringComparison.OrdinalIgnoreCase))
+            {
+                InstallerMaintenance.Uninstall(Application.ExecutablePath);
+                return;
+            }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             var form = new InstallerForm();
@@ -34,9 +40,18 @@ namespace InstallerApp
         string version = "1.0.0";
         string installPath = "";
         string mainExe = "";
+        bool allowCustomInstall = true;
         bool createDesktop = true;
         bool createStartMenu = true;
+        bool createStartup = false;
         bool writeEnv = false;
+        bool cleanupDesktop = true;
+        bool cleanupStartMenu = true;
+        bool cleanupStartup = true;
+        bool cleanupEnv = true;
+        bool cleanupInstallDir = false;
+        string startupName = "";
+        string startupArgs = "";
         string envVar = "";
         string envVal = "";
         string sourceDir = "";
@@ -120,9 +135,18 @@ namespace InstallerApp
                 version = GetStr(cfg, "version", "1.0.0");
                 installPath = GetStr(cfg, "installPath", @"C:\Program Files\" + productName);
                 mainExe = GetStr(cfg, "mainExe", "");
+                allowCustomInstall = GetBool(cfg, "allowCustomInstall", true);
                 createDesktop = GetBool(cfg, "createDesktopShortcut", true);
                 createStartMenu = GetBool(cfg, "createStartMenuShortcut", true);
+                createStartup = GetBool(cfg, "createStartupEntry", false);
                 writeEnv = GetBool(cfg, "writeEnvVars", false);
+                cleanupDesktop = GetBool(cfg, "cleanupDesktopShortcut", true);
+                cleanupStartMenu = GetBool(cfg, "cleanupStartMenuShortcut", true);
+                cleanupStartup = GetBool(cfg, "cleanupStartupEntry", true);
+                cleanupEnv = GetBool(cfg, "cleanupEnvironmentVariable", true);
+                cleanupInstallDir = GetBool(cfg, "cleanupInstallDirectory", false);
+                startupName = GetStr(cfg, "startupEntryName", productName);
+                startupArgs = GetStr(cfg, "startupArguments", "");
                 envVar = GetStr(cfg, "environmentVariable", "");
                 envVal = GetStr(cfg, "environmentValue", "");
                 selectedPath = installPath;
@@ -321,6 +345,7 @@ namespace InstallerApp
             customBtn = CreateActionButton("自定义安装", "选择安装路径和可选组件", false);
             customBtn.Location = new Point(40, 290);
             customBtn.Click += (s, e) => ShowCustom();
+            customBtn.Visible = allowCustomInstall;
             welcomePanel.Controls.Add(customBtn);
 
             content.Controls.Add(welcomePanel);
@@ -759,13 +784,25 @@ namespace InstallerApp
                     w.ReportProgress(72, "创建桌面快捷方式");
                 }
 
-                // Environment variable
+                // Current-user startup entry
+                if (createStartup)
+                {
+                    string runName = string.IsNullOrEmpty(startupName) ? productName : startupName;
+                    string runValue = "\"" + exeTarget + "\"" + (string.IsNullOrEmpty(startupArgs) ? "" : " " + startupArgs);
+                    Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run").SetValue(runName, runValue, RegistryValueKind.String);
+                    w.ReportProgress(74, "创建启动项: " + runName);
+                }
+
+                // Current-user environment variable; avoids requiring administrator rights.
                 if (writeEnv && !string.IsNullOrEmpty(envVar))
                 {
                     string val = string.IsNullOrEmpty(envVal) ? selectedPath : envVal.Replace("{app}", selectedPath);
-                    Environment.SetEnvironmentVariable(envVar, val, EnvironmentVariableTarget.Machine);
+                    Environment.SetEnvironmentVariable(envVar, val, EnvironmentVariableTarget.User);
                     w.ReportProgress(75, "设置环境变量: " + envVar);
                 }
+
+                WriteUninstallManifest(exeTarget);
+                w.ReportProgress(77, "写入卸载清理信息");
 
                 // Download components
                 var toDownload = new List<CompInfo>();
@@ -805,6 +842,31 @@ namespace InstallerApp
                 e.Result = ex.Message;
                 w.ReportProgress(100, "[错误] " + ex.Message);
             }
+        }
+
+        void WriteUninstallManifest(string exeTarget)
+        {
+            string uninstallExe = Path.Combine(selectedPath, productName + "-uninstall.exe");
+            File.Copy(Application.ExecutablePath, uninstallExe, true);
+            var manifest = new Dictionary<string, object>();
+            manifest["productName"] = productName;
+            manifest["installPath"] = selectedPath;
+            manifest["desktopShortcut"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), productName + ".lnk");
+            manifest["startMenuDirectory"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), productName);
+            manifest["startupEntryName"] = string.IsNullOrEmpty(startupName) ? productName : startupName;
+            manifest["environmentVariable"] = envVar;
+            manifest["cleanupDesktopShortcut"] = cleanupDesktop;
+            manifest["cleanupStartMenuShortcut"] = cleanupStartMenu;
+            manifest["cleanupStartupEntry"] = cleanupStartup;
+            manifest["cleanupEnvironmentVariable"] = cleanupEnv;
+            manifest["cleanupInstallDirectory"] = cleanupInstallDir;
+            File.WriteAllText(Path.Combine(selectedPath, ".installer-uninstall.json"), new JavaScriptSerializer().Serialize(manifest));
+            RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + productName);
+            key.SetValue("DisplayName", productName);
+            key.SetValue("DisplayVersion", version);
+            key.SetValue("UninstallString", "\"" + uninstallExe + "\" --uninstall");
+            key.SetValue("InstallLocation", selectedPath);
+            key.Close();
         }
 
         void Worker_ProgressChanged(object sender, ProgressChangedEventArgs e)
@@ -864,6 +926,33 @@ namespace InstallerApp
             base.OnPaint(e);
             using (var pen = new Pen(Border, 1))
                 e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+        }
+    }
+
+    class InstallerMaintenance
+    {
+        static string Str(Dictionary<string, object> d, string key) { return d.ContainsKey(key) && d[key] != null ? d[key].ToString() : ""; }
+        static bool Bool(Dictionary<string, object> d, string key) { return d.ContainsKey(key) && d[key] is bool && (bool)d[key]; }
+        public static void Uninstall(string uninstallExe)
+        {
+            string installDir = Path.GetDirectoryName(uninstallExe);
+            string manifestPath = Path.Combine(installDir, ".installer-uninstall.json");
+            try
+            {
+                if (!File.Exists(manifestPath)) throw new FileNotFoundException("未找到卸载配置。", manifestPath);
+                var cfg = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(manifestPath));
+                string product = Str(cfg, "productName");
+                if (MessageBox.Show("确定要卸载 " + product + " 吗？", "卸载确认", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+                if (Bool(cfg, "cleanupDesktopShortcut")) { string p = Str(cfg, "desktopShortcut"); if (File.Exists(p)) File.Delete(p); }
+                if (Bool(cfg, "cleanupStartMenuShortcut")) { string p = Str(cfg, "startMenuDirectory"); if (Directory.Exists(p)) Directory.Delete(p, true); }
+                if (Bool(cfg, "cleanupStartupEntry")) Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run").DeleteValue(Str(cfg, "startupEntryName"), false);
+                if (Bool(cfg, "cleanupEnvironmentVariable")) { string name = Str(cfg, "environmentVariable"); if (!string.IsNullOrEmpty(name)) Environment.SetEnvironmentVariable(name, null, EnvironmentVariableTarget.User); }
+                Registry.CurrentUser.DeleteSubKeyTree(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + product, false);
+                bool removeDir = Bool(cfg, "cleanupInstallDirectory");
+                MessageBox.Show(removeDir ? "卸载清理已完成，安装目录将在关闭后删除。" : "卸载清理已完成，安装目录已保留。", "卸载完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                if (removeDir) { Process.Start(new ProcessStartInfo("cmd.exe", "/c ping 127.0.0.1 -n 3 > nul & rmdir /s /q \"" + installDir + "\"") { CreateNoWindow = true, UseShellExecute = false }); }
+            }
+            catch (Exception ex) { MessageBox.Show("卸载失败: " + ex.Message, "卸载错误", MessageBoxButtons.OK, MessageBoxIcon.Error); }
         }
     }
 
