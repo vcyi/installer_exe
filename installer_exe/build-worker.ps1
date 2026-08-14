@@ -189,6 +189,18 @@ try {
 
     $iconLine = if ($iconFile) { "SetupIconFile=$iconFile`r`n" } else { '' }
 
+    # 可选的准备界面 Logo：先复制到独立构建目录，避免编译期间占用原始文件。
+    $prepLogoFile = ''
+    $prepLogoPath = [string]$config.prepLogoPath
+    if ($prepLogoPath) {
+        if (-not (Test-Path -LiteralPath $prepLogoPath -PathType Leaf)) { throw "Preparation logo not found: $prepLogoPath" }
+        $extension = [IO.Path]::GetExtension($prepLogoPath).ToLowerInvariant()
+        if ($extension -notin @('.png', '.jpg', '.jpeg', '.bmp')) { throw 'Preparation logo must be PNG, JPG or BMP.' }
+        $prepLogoFile = Join-Path $buildTemp ('preparation-logo' + $extension)
+        Copy-Item -LiteralPath $prepLogoPath -Destination $prepLogoFile -Force
+        Add-Log "Preparation logo: $prepLogoPath"
+    }
+
     $iss = @"
 [Setup]
 AppName=$name
@@ -291,6 +303,7 @@ end;
     $cscArgs = '/nologo /target:winexe /optimize+ '
     $cscArgs += '/reference:System.Windows.Forms.dll /reference:System.Drawing.dll '
     $cscArgs += "/resource:`"$payloadExe`",setup-payload.exe "
+    if ($prepLogoFile) { $cscArgs += "/resource:`"$prepLogoFile`",preparation-logo " }
     if (Test-Path $manifestPath) { $cscArgs += "/win32manifest:`"$manifestPath`" " }
     if ($iconFile -and (Test-Path $iconFile)) { $cscArgs += "/win32icon:`"$iconFile`" " }
     $cscArgs += "/out:`"$launcherExe`" `"$launcherPath`""

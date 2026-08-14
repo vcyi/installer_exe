@@ -22,13 +22,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\installer-studio-native.ps
 
 | 配置分类 | 可设置内容 |
 |---|---|
-| 产品与目录 | 产品名称、版本、发布者、副标题、基础程序目录、主 EXE、默认安装目录、输出目录、图标 |
+| 产品与目录 | 产品名称、版本、发布者、副标题、基础程序目录、主 EXE、默认安装目录、输出目录、图标、安装准备界面 Logo |
 | 安装模式 | 是否允许最终用户选择自定义安装；是否允许基础/快速安装选择路径（`allowInstallPathSelection`） |
 | 系统 Path | `addToSystemPath` 开关与 `systemPathValue`（制作台“Path 路径”，默认 `{app}`）。开启后仅将解析值写入 HKLM 的系统 `Path`，需要管理员权限；`{app}` 会替换为实际安装目录。 |
 | 快捷方式 | 是否创建桌面快捷方式、开始菜单快捷方式 |
 | 启动项 | 是否写入当前用户启动项、启动项名称、启动参数 |
 | 外部资源 | 资源名称、下载 URL、是否必选、解压路径、哈希值 |
 | 卸载清理 | 是否删除桌面快捷方式、开始菜单、启动项和整个安装目录 |
+
+“安装准备界面 Logo”对应配置字段 `prepLogoPath`，支持 PNG、JPG/JPEG、BMP；建议使用正方形透明 PNG。构建时该文件会复制到独立临时目录并作为 `preparation-logo` 嵌入最终启动器；未配置时会继续显示默认图形。
 
 点击“扫描基础程序目录”可核对待打包文件数量和体积。确认配置后点击“开始构建”，制作台会显示构建进度、日志和最终安装包位置。
 
@@ -59,9 +61,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\installer-studio-native.ps
 原生制作台 → build-config.json → build-worker.ps1 → Setup.exe
 
 最终 Setup.exe
-  └─ C# 启动器：请求管理员权限并提取内嵌负载
-      └─ Inno Setup 负载：解压基础程序和安装器到临时目录
+  └─ C# 启动器：请求管理员权限、显示准备进度并提取内嵌负载
+      └─ Inno Setup 负载：以可见模式解压基础程序和安装器到临时目录
           └─ C# WinForms 安装器：基础安装 / 自定义安装 / 卸载
+
+启动器按实际写入的载荷字节以不超过 64 KB 的缓冲区提取，并节流刷新百分比。载荷完整提取到 100% 后以普通可见模式启动 Inno Setup；检测到由载荷启动的 `installer-app.exe` 后，准备窗口即关闭，不等待安装器完成。
 ```
 
 `build-worker.ps1` 会把制作台配置嵌入最终安装器，随后复制基础程序、调用 Inno Setup 压缩负载，并输出 `<产品名称>-Setup-<版本号>.exe`。
