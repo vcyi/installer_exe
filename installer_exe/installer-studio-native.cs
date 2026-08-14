@@ -29,6 +29,10 @@ public class InstallerStudioNative : Form
     bool loadingConfig;
     TabControl pageTabs;
     Button[] pageButtons;
+    Process buildProcess;
+    string buildStatusFile;
+    string buildWorker;
+    readonly StringBuilder buildProcessError = new StringBuilder();
 
     public InstallerStudioNative()
     {
@@ -241,7 +245,92 @@ public class InstallerStudioNative : Form
     void ImportConfig() { string path; if (BrowseFile("导入 build-config.json", scriptDir, "JSON 文件 (*.json)|*.json|所有文件 (*.*)|*.*", out path)) LoadConfig(path, true); }
     void ExportConfig() { string path; if (SaveFile("导出 build-config.json", scriptDir, "JSON 文件 (*.json)|*.json|所有文件 (*.*)|*.*", "build-config.json", out path)) { SaveConfig(path); MessageBox.Show("配置已导出。", Text); } }
     void ScanDirectory() { try { if (!Directory.Exists(sourceDir.Text)) throw new DirectoryNotFoundException(sourceDir.Text); long bytes = 0; int count = 0; foreach (string f in Directory.GetFiles(sourceDir.Text, "*", SearchOption.AllDirectories)) { count++; bytes += new FileInfo(f).Length; } scanResult.Text = string.Format("{0:N0} 个文件，{1:N2} MB", count, bytes / 1024.0 / 1024.0); } catch (Exception ex) { scanResult.Text = "扫描失败：" + ex.Message; } }
-    void StartBuild() { try { if (!Directory.Exists(sourceDir.Text)) { MessageBox.Show("请选择有效的基础程序目录。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; } string worker = Path.Combine(scriptDir, "build-worker.ps1"), config = Path.Combine(scriptDir, "build-config.json"), status = Path.Combine(scriptDir, "build-status.json"); if (!File.Exists(worker)) throw new FileNotFoundException("未找到 build-worker.ps1", worker); SaveConfig(config); File.WriteAllText(status, json.Serialize(new Dictionary<string, object> { {"status","starting"}, {"progress",0}, {"log",new string[] { "Starting build process..." }}, {"output",""}, {"error",""} }), new UTF8Encoding(false)); string inno = Environment.GetEnvironmentVariable("INNO_SETUP_PATH") ?? @"C:\Program Files (x86)\Inno Setup 6"; ProcessStartInfo psi = new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File \"" + worker + "\" -ConfigFile \"" + config + "\" -StatusFile \"" + status + "\" -ScriptDir \"" + scriptDir + "\" -InnoBinDir \"" + inno + "\""); psi.CreateNoWindow = true; psi.UseShellExecute = false; Process.Start(psi); logBox.Clear(); progress.Value = 0; buildState.Text = "状态：构建已启动"; SelectPage(3); statusTimer.Start(); } catch (Exception ex) { MessageBox.Show("无法启动构建：" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); } }
-    void PollStatus() { try { string statusFile = Path.Combine(scriptDir, "build-status.json"); if (!File.Exists(statusFile)) return; IDictionary<string, object> d = json.DeserializeObject(File.ReadAllText(statusFile, Encoding.UTF8)) as IDictionary<string, object>; string state = S(d,"status"); int value = 0; Int32.TryParse(S(d,"progress"), out value); progress.Value = Math.Max(0, Math.Min(100, value)); buildState.Text = "状态：" + state + "（" + value + "%）"; outputLabel.Text = "输出：" + S(d,"output"); logBox.Text = ""; IEnumerable logs = Get(d,"log") as IEnumerable; if (logs != null) foreach (object line in logs) logBox.AppendText(Convert.ToString(line) + Environment.NewLine); logBox.SelectionStart = logBox.TextLength; logBox.ScrollToCaret(); if (state == "done" || state == "error") statusTimer.Stop(); } catch { } }
+    string FindIscc()
+    {
+        string configured = Environment.GetEnvironmentVariable("INNO_SETUP_PATH");
+        List<string> candidates = new List<string>();
+        if (!string.IsNullOrEmpty(configured)) candidates.Add(File.Exists(configured) ? configured : Path.Combine(configured, "ISCC.exe"));
+        candidates.Add(@"C:\Program Files (x86)\Inno Setup 6\ISCC.exe");
+        candidates.Add(@"C:\Program Files\Inno Setup 6\ISCC.exe");
+        foreach (string candidate in candidates) if (File.Exists(candidate)) return candidate;
+        return null;
+    }
+    void WriteBuildStatus(string state, string message)
+    {
+        string status = buildStatusFile ?? Path.Combine(scriptDir, "build-status.json");
+        bool isError = state == "error";
+        Dictionary<string, object> data = new Dictionary<string, object> { {"status", state}, {"progress", 0}, {"log", new string[] { (isError ? "[ERROR] " : "") + message }}, {"output", ""}, {"error", isError ? message : ""} };
+        File.WriteAllText(status, json.Serialize(data), new UTF8Encoding(false));
+    }
+    void WriteBuildError(string message) { WriteBuildStatus("error", message); }
+    string ReadStatusWithRetry(string path)
+    {
+        Exception last = null;
+        for (int attempt = 0; attempt < 5; attempt++)
+        {
+            try { using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) using (StreamReader reader = new StreamReader(stream, Encoding.UTF8)) return reader.ReadToEnd(); }
+            catch (IOException ex) { last = ex; System.Threading.Thread.Sleep(80); }
+        }
+        throw new IOException("无法读取构建状态文件（文件可能仍被占用）。", last);
+    }
+    void BuildProcessExited(object sender, EventArgs args)
+    {
+        BeginInvoke((MethodInvoker)delegate
+        {
+            Process process = buildProcess;
+            if (process == null) return;
+            string details = buildProcessError.ToString().Trim();
+            int exitCode = process.ExitCode;
+            try
+            {
+                PollStatus();
+                string current = "";
+                if (File.Exists(buildStatusFile)) { IDictionary<string, object> data = json.DeserializeObject(ReadStatusWithRetry(buildStatusFile)) as IDictionary<string, object>; current = S(data, "status"); }
+                if ((current == "starting" || current == "running" || current.Length == 0) && exitCode != 0)
+                {
+                    string message = "构建后台进程异常退出（退出码 " + exitCode + "）。" + (details.Length > 0 ? "\r\n标准错误：\r\n" + details : "");
+                    WriteBuildError(message); PollStatus();
+                }
+            }
+            catch (Exception ex) { buildState.Text = "状态：读取构建结果失败"; logBox.Text = "[ERROR] " + ex.Message; }
+        });
+    }
+    void StartBuild()
+    {
+        try
+        {
+            if (buildProcess != null && !buildProcess.HasExited) { MessageBox.Show("已有构建任务正在运行。", Text, MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+            if (!Directory.Exists(sourceDir.Text)) { MessageBox.Show("请选择有效的基础程序目录。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+            string iscc = FindIscc();
+            if (string.IsNullOrEmpty(iscc)) { string message = "未找到 Inno Setup 编译器 ISCC.exe。请安装 Inno Setup 6，或将 INNO_SETUP_PATH 设置为 ISCC.exe 或其安装目录。\r\n已检查：\r\nC:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe\r\nC:\\Program Files\\Inno Setup 6\\ISCC.exe"; WriteBuildError(message); buildState.Text = "状态：错误（未找到 ISCC.exe）"; logBox.Text = "[ERROR] " + message; SelectPage(3); MessageBox.Show(message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
+            buildWorker = Path.Combine(scriptDir, "build-worker.ps1"); string config = Path.Combine(scriptDir, "build-config.json"); buildStatusFile = Path.Combine(scriptDir, "build-status.json");
+            if (!File.Exists(buildWorker)) throw new FileNotFoundException("未找到 build-worker.ps1", buildWorker);
+            SaveConfig(config); WriteBuildStatus("starting", "构建正在启动...");
+            ProcessStartInfo psi = new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File \"" + buildWorker + "\" -ConfigFile \"" + config + "\" -StatusFile \"" + buildStatusFile + "\" -ScriptDir \"" + scriptDir + "\" -InnoBinDir \"" + Path.GetDirectoryName(iscc) + "\"");
+            psi.CreateNoWindow = true; psi.UseShellExecute = false; psi.RedirectStandardError = true; psi.RedirectStandardOutput = true;
+            buildProcessError.Length = 0; buildProcess = new Process(); buildProcess.StartInfo = psi; buildProcess.EnableRaisingEvents = true;
+            buildProcess.ErrorDataReceived += delegate(object s, DataReceivedEventArgs e) { if (!string.IsNullOrEmpty(e.Data)) lock (buildProcessError) buildProcessError.AppendLine(e.Data); };
+            buildProcess.Exited += BuildProcessExited;
+            if (!buildProcess.Start()) throw new InvalidOperationException("未能启动 PowerShell 构建进程。");
+            buildProcess.BeginErrorReadLine(); buildProcess.BeginOutputReadLine(); logBox.Clear(); progress.Value = 0; buildState.Text = "状态：构建已启动"; SelectPage(3); statusTimer.Start();
+        }
+        catch (Exception ex) { WriteBuildError("无法启动构建：" + ex.Message); PollStatus(); MessageBox.Show("无法启动构建：" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); }
+    }
+    void PollStatus()
+    {
+        string statusFile = buildStatusFile ?? Path.Combine(scriptDir, "build-status.json");
+        if (!File.Exists(statusFile)) return;
+        try
+        {
+            IDictionary<string, object> d = json.DeserializeObject(ReadStatusWithRetry(statusFile)) as IDictionary<string, object>;
+            if (d == null) throw new InvalidDataException("构建状态文件格式无效。");
+            string state = S(d,"status"), error = S(d,"error"); int value = 0; Int32.TryParse(S(d,"progress"), out value); progress.Value = Math.Max(0, Math.Min(100, value));
+            buildState.Text = "状态：" + state + "（" + value + "%）" + (error.Length > 0 ? " - " + error : ""); outputLabel.Text = "输出：" + S(d,"output"); logBox.Text = "";
+            IEnumerable logs = Get(d,"log") as IEnumerable; if (logs != null) foreach (object line in logs) logBox.AppendText(Convert.ToString(line) + Environment.NewLine);
+            if (error.Length > 0 && (logs == null)) logBox.AppendText("[ERROR] " + error + Environment.NewLine);
+            logBox.SelectionStart = logBox.TextLength; logBox.ScrollToCaret(); if (state == "done" || state == "error") statusTimer.Stop();
+        }
+        catch (Exception ex) { buildState.Text = "状态：读取构建状态失败 - " + ex.Message; logBox.Text = "[ERROR] " + ex.ToString(); statusTimer.Stop(); }
+    }
     [STAThread] public static void Main() { Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false); Application.Run(new InstallerStudioNative()); }
 }

@@ -23,6 +23,9 @@ function Add-Log($text) {
     Save-Status 'running'
 }
 
+# 启动后立即覆盖 UI 写入的 starting 状态，避免任务早期异常时长期停在 0%。
+Save-Status 'running'
+
 try {
     # --- Locate ISCC.exe ---
     $paths = @()
