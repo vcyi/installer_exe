@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO.Compression;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Runtime.InteropServices;
 using System.Drawing.Drawing2D;
 using System.IO;
@@ -22,7 +23,9 @@ namespace InstallerApp
         [STAThread]
         static void Main(string[] args)
         {
-            if (args != null && args.Length > 0 && string.Equals(args[0], "--uninstall", StringComparison.OrdinalIgnoreCase))
+            bool uninstallRequested = args != null && args.Length > 0 && string.Equals(args[0], "--uninstall", StringComparison.OrdinalIgnoreCase);
+            bool uninstallCopy = Path.GetFileNameWithoutExtension(Application.ExecutablePath).EndsWith("-uninstall", StringComparison.OrdinalIgnoreCase);
+            if (uninstallRequested || uninstallCopy)
             {
                 InstallerMaintenance.Uninstall(Application.ExecutablePath);
                 return;
@@ -443,33 +446,52 @@ namespace InstallerApp
         {
             customPanel = new Panel { Dock = DockStyle.Fill, BackColor = BG, Visible = false };
 
+            var headerPanel = new Panel { Dock = DockStyle.Top, Height = 78, Padding = new Padding(40, 20, 40, 0), BackColor = Color.Transparent };
             var heading = new Label
             {
                 Text = "自定义安装",
                 Font = TitleFont,
                 ForeColor = Text0,
-                Location = new Point(40, 30),
-                AutoSize = true,
+                Dock = DockStyle.Top,
+                Height = 27,
+                AutoEllipsis = false,
                 BackColor = Color.Transparent
             };
-            customPanel.Controls.Add(heading);
+            var pathLabel = new Label
+            {
+                Text = "选择安装路径和可选组件",
+                Font = MainFont,
+                ForeColor = Text2,
+                Dock = DockStyle.Top,
+                Height = 25,
+                AutoEllipsis = false,
+                BackColor = Color.Transparent
+            };
+            headerPanel.Controls.Add(pathLabel);
+            headerPanel.Controls.Add(heading);
+
+            var optionsPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(40, 8, 40, 10), BackColor = Color.Transparent };
+            customPanel.Controls.Add(optionsPanel);
+            customPanel.Controls.Add(headerPanel);
 
             // Path selection
-            var pathLabel = new Label
+            var installPathLabel = new Label
             {
                 Text = "安装路径",
                 Font = MainFont,
                 ForeColor = Text1,
-                Location = new Point(40, 80),
-                AutoSize = true,
+                Dock = DockStyle.Top,
+                Height = 25,
+                AutoEllipsis = false,
                 BackColor = Color.Transparent
             };
-            customPanel.Controls.Add(pathLabel);
+            optionsPanel.Controls.Add(installPathLabel);
 
             pathBox = new TextBox
             {
-                Location = new Point(40, 105),
+                Location = new Point(0, 28),
                 Size = new Size(540, 32),
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
                 Font = MainFont,
                 ForeColor = Text0,
                 BackColor = Surface,
@@ -477,13 +499,14 @@ namespace InstallerApp
                 Text = selectedPath
             };
             pathBox.TextChanged += (s, e) => selectedPath = pathBox.Text;
-            customPanel.Controls.Add(pathBox);
+            optionsPanel.Controls.Add(pathBox);
 
             browseBtn = new Button
             {
                 Text = "浏览",
-                Location = new Point(590, 104),
+                Location = new Point(550, 27),
                 Size = new Size(90, 34),
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
                 Font = MainFont,
                 ForeColor = Cyan,
                 BackColor = Surface,
@@ -500,7 +523,7 @@ namespace InstallerApp
                     pathBox.Text = selectedPath;
                 }
             };
-            customPanel.Controls.Add(browseBtn);
+            optionsPanel.Controls.Add(browseBtn);
 
             // Components
             var compLabel = new Label
@@ -508,27 +531,30 @@ namespace InstallerApp
                 Text = "可选组件",
                 Font = MainFont,
                 ForeColor = Text1,
-                Location = new Point(40, 160),
+                Location = new Point(0, 78),
                 AutoSize = true,
                 BackColor = Color.Transparent
             };
-            customPanel.Controls.Add(compLabel);
+            optionsPanel.Controls.Add(compLabel);
 
             compPanel = new Panel
             {
-                Location = new Point(40, 185),
+                Location = new Point(0, 103),
                 Size = new Size(640, 150),
+                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
                 BackColor = Surface,
                 BorderStyle = BorderStyle.FixedSingle,
                 AutoScroll = true
             };
-            customPanel.Controls.Add(compPanel);
+            optionsPanel.Controls.Add(compPanel);
 
-            // Back button
+            // Bottom actions stay visible at the bottom of the responsive options area.
+            var actionsPanel = new Panel { Dock = DockStyle.Bottom, Height = 48, BackColor = Color.Transparent };
+            optionsPanel.Controls.Add(actionsPanel);
             backBtn1 = new Button
             {
                 Text = "返回",
-                Location = new Point(40, 400),
+                Location = new Point(0, 5),
                 Size = new Size(100, 38),
                 Font = MainFont,
                 ForeColor = Text2,
@@ -538,14 +564,14 @@ namespace InstallerApp
             };
             backBtn1.FlatAppearance.BorderColor = Border;
             backBtn1.Click += (s, e) => ShowWelcome();
-            customPanel.Controls.Add(backBtn1);
+            actionsPanel.Controls.Add(backBtn1);
 
-            // Start install button
             startInstallBtn = new Button
             {
                 Text = "开始安装",
-                Location = new Point(560, 400),
+                Location = new Point(520, 5),
                 Size = new Size(120, 38),
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
                 Font = MainFont,
                 ForeColor = Color.White,
                 BackColor = Cyan,
@@ -553,7 +579,7 @@ namespace InstallerApp
                 Cursor = Cursors.Hand
             };
             startInstallBtn.Click += (s, e) => StartCustomInstall();
-            customPanel.Controls.Add(startInstallBtn);
+            actionsPanel.Controls.Add(startInstallBtn);
 
             content.Controls.Add(customPanel);
         }
@@ -863,8 +889,11 @@ namespace InstallerApp
                 if (addToSystemPath)
                 {
                     string resolvedSystemPath = string.IsNullOrEmpty(systemPathValue) ? selectedPath : systemPathValue.Replace("{app}", selectedPath);
-                    if (!SystemPath.Add(resolvedSystemPath)) systemPathEntry = ""; else systemPathEntry = resolvedSystemPath;
-                    w.ReportProgress(76, string.IsNullOrEmpty(systemPathEntry) ? "系统 Path 已存在相同项，未重复添加" : "已加入系统 Path: " + systemPathEntry);
+                    bool added;
+                    SystemPath.Add(resolvedSystemPath, out added);
+                    // Only persist an entry we added, so uninstall never removes a pre-existing Path item.
+                    if (added) systemPathEntry = resolvedSystemPath;
+                    w.ReportProgress(76, added ? "已加入系统 Path: " + systemPathEntry : "系统 Path 已存在相同项，未重复添加");
                 }
 
                 WriteUninstallManifest(exeTarget, systemPathEntry);
@@ -1082,6 +1111,14 @@ namespace InstallerApp
     {
         static string Str(Dictionary<string, object> d, string key) { return d.ContainsKey(key) && d[key] != null ? d[key].ToString() : ""; }
         static bool Bool(Dictionary<string, object> d, string key) { return d.ContainsKey(key) && d[key] is bool && (bool)d[key]; }
+        static bool IsAdministrator()
+        {
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+            {
+                return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+            }
+        }
+
         public static void Uninstall(string uninstallExe)
         {
             string installDir = Path.GetDirectoryName(uninstallExe);
@@ -1089,6 +1126,13 @@ namespace InstallerApp
             try
             {
                 if (!File.Exists(manifestPath)) throw new FileNotFoundException("未找到卸载配置。", manifestPath);
+                if (!IsAdministrator())
+                {
+                    DialogResult result = MessageBox.Show("卸载需要管理员权限以删除系统 Path。是否以管理员身份继续？", "需要管理员权限", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                    if (result != DialogResult.Yes) return;
+                    Process.Start(new ProcessStartInfo(uninstallExe, "--uninstall") { Verb = "runas", UseShellExecute = true });
+                    return;
+                }
                 var cfg = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(manifestPath));
                 string product = Str(cfg, "productName");
                 if (MessageBox.Show("确定要卸载 " + product + " 吗？", "卸载确认", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
@@ -1118,7 +1162,12 @@ namespace InstallerApp
     static class SystemPath
     {
         const string EnvironmentKey = @"SYSTEM\CurrentControlSet\Control\Session Manager\Environment";
-        public static bool Add(string value) { return Update(value, true); }
+        // Returns whether the value was newly written through the out flag; false means it already existed.
+        public static bool Add(string value, out bool added)
+        {
+            added = Update(value, true);
+            return added;
+        }
         public static bool Remove(string value) { return Update(value, false); }
         static bool Update(string value, bool add)
         {
