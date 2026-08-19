@@ -1,8 +1,14 @@
 @echo off
 setlocal
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer-studio-native.ps1"
-if errorlevel 1 (
+set "APP=%~dp0installer-studio-native.exe"
+
+if not exist "%APP%" (
   echo.
-  echo 制作台启动失败。请检查 .NET Framework 4 和脚本文件是否完整。
+  echo 未找到制作台程序：%APP%
+  echo 请确认 installer-studio-native.exe 与本脚本位于同一目录。
   pause
+  exit /b 1
 )
+
+start "Installer Studio" /D "%~dp0" "%APP%"
+exit /b 0

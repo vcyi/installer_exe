@@ -14,11 +14,13 @@ public class InstallerStudioNative : Form
 {
     readonly string scriptDir = AppDomain.CurrentDomain.BaseDirectory;
     readonly JavaScriptSerializer json = new JavaScriptSerializer();
-    // 浅色教育科技主题：暖白画布、洁净卡片与蓝绿色操作强调。
-    readonly Color Canvas = Color.FromArgb(247, 248, 246), Surface = Color.FromArgb(255, 255, 255), Card = Color.FromArgb(255, 255, 255);
-    readonly Color Field = Color.FromArgb(244, 247, 249), Line = Color.FromArgb(218, 226, 232), Cyan = Color.FromArgb(13, 148, 136), TextMain = Color.FromArgb(28, 43, 58), TextMuted = Color.FromArgb(100, 116, 139);
-    TextBox productName, version, publisher, subtitle, sourceDir, outputDir, installPath, mainExe, iconPath, prepLogoPath, systemPathValue, startupName, startupArgs, scanResult;
+    // Apple-inspired light system: frosted white layers, soft blue accent and low-contrast separation.
+    readonly Color Canvas = Color.FromArgb(242, 244, 250), Surface = Color.FromArgb(250, 251, 255), Card = Color.FromArgb(255, 255, 255);
+    readonly Color Field = Color.FromArgb(246, 248, 253), Line = Color.FromArgb(222, 227, 238), Cyan = Color.FromArgb(10, 132, 255), TextMain = Color.FromArgb(28, 28, 30), TextMuted = Color.FromArgb(110, 110, 115);
+    TextBox productName, productId, version, publisher, subtitle, sourceDir, outputDir, installPath, mainExe, iconPath, prepLogoPath, systemPathValue, startupName, startupArgs, desktopArgs, startMenuArgs, scanResult;
     CheckBox customInstall, allowInstallPathSelection, addToSystemPath, desktop, startMenu, startup, cleanDesktop, cleanStartMenu, cleanStartup, cleanInstallDir;
+    ComboBox profileList;
+    string activeProfilePath;
     ComboBox theme;
     DataGridView resources;
     RichTextBox logBox;
@@ -39,26 +41,35 @@ public class InstallerStudioNative : Form
         Text = "Installer Studio Native | 教育部署控制台";
         // 支持在 1024 x 660 左右的窗口完整显示；内容区域会按页垂直滚动。
         StartPosition = FormStartPosition.CenterScreen; MinimumSize = new Size(980, 620); Size = new Size(1240, 800);
+        AutoScaleMode = AutoScaleMode.Dpi;
         Font = new Font("Microsoft YaHei UI", 9F); BackColor = Canvas; ForeColor = TextMain;
         BuildUi();
         statusTimer = new Timer(); statusTimer.Interval = 700; statusTimer.Tick += delegate { PollStatus(); };
         LoadConfig(Path.Combine(scriptDir, "build-config.json"), false);
+        RefreshProfiles();
         BindAutoSave();
         FormClosing += delegate { SaveDefaultConfig(); };
     }
 
     class CardPanel : Panel
     {
-        public Color BorderColor = Color.FromArgb(39, 73, 101);
-        public CardPanel() { DoubleBuffered = true; Padding = new Padding(20); }
-        protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); using (Pen p = new Pen(BorderColor)) e.Graphics.DrawRectangle(p, 0, 0, Width - 1, Height - 1); }
+        public Color BorderColor = Color.FromArgb(220, 225, 235);
+        public CardPanel() { DoubleBuffered = true; Padding = new Padding(22); }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (SolidBrush shadow = new SolidBrush(Color.FromArgb(12, 24, 48, 90))) e.Graphics.FillPath(shadow, RoundRect(new Rectangle(2, 4, Width - 5, Height - 6), 16));
+            using (SolidBrush fill = new SolidBrush(BackColor)) e.Graphics.FillPath(fill, RoundRect(new Rectangle(1, 1, Width - 4, Height - 5), 16));
+            using (Pen p = new Pen(BorderColor)) e.Graphics.DrawPath(p, RoundRect(new Rectangle(1, 1, Width - 4, Height - 5), 16));
+        }
+        static GraphicsPath RoundRect(Rectangle r, int radius) { int d = radius * 2; GraphicsPath p = new GraphicsPath(); p.AddArc(r.X, r.Y, d, d, 180, 90); p.AddArc(r.Right-d, r.Y, d, d, 270, 90); p.AddArc(r.Right-d, r.Bottom-d, d, d, 0, 90); p.AddArc(r.X, r.Bottom-d, d, d, 90, 90); p.CloseFigure(); return p; }
     }
     Label LabelText(string value, float size, Color color) { return new Label { Text = value, AutoSize = true, ForeColor = color, Font = new Font("Microsoft YaHei UI", size, FontStyle.Regular), BackColor = Color.Transparent }; }
-    TextBox TextField(string value) { return new TextBox { Dock = DockStyle.Fill, Text = value ?? "", BackColor = Field, ForeColor = TextMain, BorderStyle = BorderStyle.FixedSingle, Height = 30 }; }
+    TextBox TextField(string value) { return new TextBox { Dock = DockStyle.Fill, Text = value ?? "", BackColor = Field, ForeColor = TextMain, BorderStyle = BorderStyle.FixedSingle, Height = 32 }; }
     Button ActionButton(string text, bool primary)
     {
-        Button b = new Button { Text = text, FlatStyle = FlatStyle.Flat, Height = 32, AutoSize = true, Padding = new Padding(12, 0, 12, 0), BackColor = primary ? Cyan : Surface, ForeColor = primary ? Color.White : TextMain, Cursor = Cursors.Hand };
-        b.FlatAppearance.BorderColor = primary ? Cyan : Line; b.FlatAppearance.MouseOverBackColor = primary ? Color.FromArgb(15, 118, 110) : Color.FromArgb(238, 246, 247); return b;
+        Button b = new Button { Text = text, FlatStyle = FlatStyle.Flat, Height = 34, AutoSize = true, Padding = new Padding(14, 0, 14, 0), BackColor = primary ? Cyan : Card, ForeColor = primary ? Color.White : TextMain, Cursor = Cursors.Hand };
+        b.FlatAppearance.BorderColor = primary ? Cyan : Line; b.FlatAppearance.MouseOverBackColor = primary ? Color.FromArgb(0, 110, 230) : Color.FromArgb(238, 243, 252); return b;
     }
     void AddRow(TableLayoutPanel p, int row, string label, Control control)
     {
@@ -115,14 +126,14 @@ public class InstallerStudioNative : Form
     {
         if (pageTabs == null || index < 0 || index >= pageTabs.TabPages.Count) return;
         pageTabs.SelectedIndex = index; headerPage.Text = pageTabs.TabPages[index].Text;
-        for (int i = 0; pageButtons != null && i < pageButtons.Length; i++) { bool selected = i == index; pageButtons[i].BackColor = selected ? Color.FromArgb(229, 246, 243) : Surface; pageButtons[i].ForeColor = selected ? Cyan : TextMuted; pageButtons[i].FlatAppearance.BorderColor = selected ? Color.FromArgb(166, 216, 209) : Surface; }
+        for (int i = 0; pageButtons != null && i < pageButtons.Length; i++) { bool selected = i == index; pageButtons[i].BackColor = selected ? Color.FromArgb(218, 235, 255) : Color.Transparent; pageButtons[i].ForeColor = selected ? Cyan : TextMuted; pageButtons[i].FlatAppearance.BorderColor = selected ? Color.FromArgb(196, 220, 250) : Surface; }
     }
     void BuildUi()
     {
         SuspendLayout();
-        Panel shell = new Panel { Dock = DockStyle.Fill, BackColor = Canvas }; Controls.Add(shell);
-        Panel side = new Panel { Dock = DockStyle.Left, Width = 218, BackColor = Surface, Padding = new Padding(16, 20, 16, 18) };
-        side.Paint += delegate(object sender, PaintEventArgs e) { using (Pen p = new Pen(Line)) e.Graphics.DrawLine(p, side.Width - 1, 0, side.Width - 1, side.Height); };
+        Panel shell = new Panel { Dock = DockStyle.Fill, BackColor = Canvas, Padding = new Padding(12) }; Controls.Add(shell);
+        Panel side = new Panel { Dock = DockStyle.Left, Width = 230, BackColor = Surface, Padding = new Padding(18, 22, 18, 18) };
+        side.Paint += delegate(object sender, PaintEventArgs e) { e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; using (SolidBrush glow = new SolidBrush(Color.FromArgb(90, 255, 255, 255))) e.Graphics.FillRectangle(glow, 0, 0, side.Width, side.Height); using (Pen p = new Pen(Line)) e.Graphics.DrawLine(p, side.Width - 1, 12, side.Width - 1, side.Height - 12); };
         Panel main = new Panel { Dock = DockStyle.Fill, BackColor = Canvas };
         // WinForms 按 Z 顺序反向处理停靠控件：先加入 Fill，再加入 Left，避免侧栏覆盖主内容左边缘。
         shell.Controls.Add(main); shell.Controls.Add(side);
@@ -142,11 +153,20 @@ public class InstallerStudioNative : Form
     }
     void BuildHeader(Panel main)
     {
-        Panel head = new Panel { Dock = DockStyle.Top, Height = 104, BackColor = Surface, Padding = new Padding(24, 16, 24, 12) }; head.Paint += delegate(object sender, PaintEventArgs e) { using (Pen p = new Pen(Line)) e.Graphics.DrawLine(p, 0, head.Height - 1, head.Width, head.Height - 1); }; main.Controls.Add(head);
-        headerPage = LabelText("产品与目录", 18F, TextMain); headerPage.Font = new Font("Microsoft YaHei UI", 18F, FontStyle.Bold); headerPage.Location = new Point(24, 16); head.Controls.Add(headerPage);
-        headerHint = LabelText("配置你的学习产品安装体验与分发资源", 9F, TextMuted); headerHint.Location = new Point(26, 52); head.Controls.Add(headerHint);
-        Button build = ActionButton("开始构建", true); build.Dock = DockStyle.Right; build.Width = 116; build.Click += delegate { StartBuild(); }; head.Controls.Add(build);
-        Button scan = ActionButton("扫描目录", false); scan.Dock = DockStyle.Right; scan.Width = 96; scan.Margin = new Padding(0, 0, 10, 0); scan.Click += delegate { ScanDirectory(); }; head.Controls.Add(scan);
+        Panel head = new Panel { Dock = DockStyle.Top, Height = 118, BackColor = Surface, Padding = new Padding(24, 16, 24, 14) }; head.Paint += delegate(object sender, PaintEventArgs e) { using (Pen p = new Pen(Line)) e.Graphics.DrawLine(p, 0, head.Height - 1, head.Width, head.Height - 1); }; main.Controls.Add(head);
+        Panel red = new Panel { BackColor = Color.FromArgb(255,95,87), Location = new Point(24,19), Size = new Size(12,12) }; red.Region = new Region(new Rectangle(0,0,12,12));
+        Panel yellow = new Panel { BackColor = Color.FromArgb(255,189,46), Location = new Point(42,19), Size = new Size(12,12) }; yellow.Region = new Region(new Rectangle(0,0,12,12));
+        Panel green = new Panel { BackColor = Color.FromArgb(40,200,64), Location = new Point(60,19), Size = new Size(12,12) }; green.Region = new Region(new Rectangle(0,0,12,12));
+        head.Controls.Add(red); head.Controls.Add(yellow); head.Controls.Add(green);
+        headerPage = LabelText("产品与目录", 18F, TextMain); headerPage.Font = new Font("Microsoft YaHei UI", 18F, FontStyle.Bold); headerPage.Location = new Point(24, 45); head.Controls.Add(headerPage);
+        headerHint = LabelText("配置你的学习产品安装体验与分发资源", 9F, TextMuted); headerHint.AutoSize = false; headerHint.Size = new Size(520, 24); headerHint.TextAlign = ContentAlignment.MiddleLeft; headerHint.Location = new Point(26, 80); head.Controls.Add(headerHint);
+        // 所有操作控件使用同一固定高度的顶栏，避免 DockStyle.Right 占满标题区域造成遮挡。
+        profileList = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Size = new Size(150, 34), BackColor = Field, ForeColor = TextMain, FlatStyle = FlatStyle.Flat, Location = new Point(272, 14) }; head.Controls.Add(profileList);
+        Button loadProfile = ActionButton("加载模板", false); loadProfile.Size = new Size(78, 34); loadProfile.Location = new Point(430, 14); loadProfile.Click += delegate { LoadSelectedProfile(); }; head.Controls.Add(loadProfile);
+        Button saveProfile = ActionButton("保存模板", false); saveProfile.Size = new Size(78, 34); saveProfile.Location = new Point(516, 14); saveProfile.Click += delegate { SaveProfile(false); }; head.Controls.Add(saveProfile);
+        Button copyProfile = ActionButton("另存模板", false); copyProfile.Size = new Size(78, 34); copyProfile.Location = new Point(602, 14); copyProfile.Click += delegate { SaveProfile(true); }; head.Controls.Add(copyProfile);
+        Button scan = ActionButton("扫描目录", false); scan.Size = new Size(90, 34); scan.Location = new Point(700, 14); scan.Click += delegate { ScanDirectory(); }; head.Controls.Add(scan);
+        Button build = ActionButton("开始构建", true); build.Size = new Size(106, 34); build.Location = new Point(798, 14); build.Click += delegate { StartBuild(); }; head.Controls.Add(build);
         MenuStrip menu = new MenuStrip { Dock = DockStyle.Bottom, BackColor = Surface, ForeColor = TextMuted, Renderer = new DarkMenuRenderer(Surface, Card, TextMain) };
         ToolStripMenuItem file = new ToolStripMenuItem("配置文件"); file.DropDownItems.Add("导入 build-config.json...", null, delegate { ImportConfig(); }); file.DropDownItems.Add("导出 build-config.json...", null, delegate { ExportConfig(); }); file.DropDownItems.Add("保存到默认配置", null, delegate { SaveConfig(Path.Combine(scriptDir, "build-config.json")); }); menu.Items.Add(file); head.Controls.Add(menu); MainMenuStrip = menu;
     }
@@ -190,15 +210,15 @@ public class InstallerStudioNative : Form
     {
         TabPage product = NewPage("产品与目录"); pageTabs.TabPages.Add(product); CardPanel card = PageCard(product, "产品身份与文件路径", "定义学习产品的发布信息、安装位置和输出目标");
         TableLayoutPanel p = FormTable(); AddCardContent(card, p);
-        productName = TextField("My Application"); version = TextField("1.0.0"); publisher = TextField(""); subtitle = TextField("安装程序"); sourceDir = TextField(""); outputDir = TextField(scriptDir); installPath = TextField("C:\\Program Files\\My Application"); mainExe = TextField(""); iconPath = TextField(""); prepLogoPath = TextField(""); scanResult = TextField("尚未扫描"); scanResult.ReadOnly = true;
-        AddRow(p, 0, "产品名称 *", productName); AddRow(p, 1, "版本", version); AddRow(p, 2, "发布者", publisher); AddRow(p, 3, "副标题", subtitle); AddRow(p, 4, "基础程序目录 *", BrowseField(sourceDir, true, "")); AddRow(p, 5, "输出目录", BrowseField(outputDir, true, "")); AddRow(p, 6, "默认安装目录", installPath); AddRow(p, 7, "主程序 EXE", mainExe); AddRow(p, 8, "图标文件", BrowseField(iconPath, false, "图标文件 (*.ico)|*.ico|所有文件 (*.*)|*.*")); AddRow(p, 9, "安装准备界面 Logo", BrowseField(prepLogoPath, false, "Logo 图片 (*.png;*.jpg;*.jpeg;*.bmp)|*.png;*.jpg;*.jpeg;*.bmp|所有文件 (*.*)|*.*")); AddRow(p, 10, "Logo 建议", LabelText("推荐使用正方形透明 PNG，以获得最佳显示效果。", 8.5F, TextMuted)); AddRow(p, 11, "目录扫描", scanResult);
+        productName = TextField("My Application"); productId = TextField(Guid.NewGuid().ToString().ToUpper()); version = TextField("1.0.0"); publisher = TextField(""); subtitle = TextField("安装程序"); sourceDir = TextField(""); outputDir = TextField(scriptDir); installPath = TextField("C:\\Program Files\\My Application"); mainExe = TextField(""); iconPath = TextField(""); prepLogoPath = TextField(""); scanResult = TextField("尚未扫描"); scanResult.ReadOnly = true;
+        AddRow(p, 0, "产品名称 *", productName); AddRow(p, 1, "产品唯一 ID *", productId); AddRow(p, 2, "版本", version); AddRow(p, 3, "发布者", publisher); AddRow(p, 4, "副标题", subtitle); AddRow(p, 5, "基础程序目录 *", BrowseField(sourceDir, true, "")); AddRow(p, 6, "输出目录", BrowseField(outputDir, true, "")); AddRow(p, 7, "默认安装目录", installPath); AddRow(p, 8, "主程序 EXE", mainExe); AddRow(p, 9, "图标文件", BrowseField(iconPath, false, "图标文件 (*.ico)|*.ico|所有文件 (*.*)|*.*")); AddRow(p, 10, "安装准备界面 Logo", BrowseField(prepLogoPath, false, "Logo 图片 (*.png;*.jpg;*.jpeg;*.bmp)|*.png;*.jpg;*.jpeg;*.bmp|所有文件 (*.*)|*.*")); AddRow(p, 11, "Logo 建议", LabelText("推荐使用横向或正方形透明 PNG，构建时自动裁切留白。", 8.5F, TextMuted)); AddRow(p, 12, "目录扫描", scanResult);
     }
     void BuildBehaviorPage()
     {
         TabPage behavior = NewPage("安装行为"); pageTabs.TabPages.Add(behavior); CardPanel card = PageCard(behavior, "学习终端部署策略", "控制快捷入口、启动任务、系统 Path 和卸载清理规则"); TableLayoutPanel bp = FormTable(); AddCardContent(card, bp);
-        customInstall = Check("允许用户自定义安装（路径与可选组件）", true); allowInstallPathSelection = Check("允许基础/快速安装用户选择路径", false); addToSystemPath = Check("将指定路径加入系统 Path（HKLM，需要管理员权限）", false); systemPathValue = TextField("{app}"); desktop = Check("创建桌面快捷方式", true); startMenu = Check("创建开始菜单快捷方式", true); startup = Check("创建当前用户启动项", false); startupName = TextField(""); startupArgs = TextField(""); cleanDesktop = Check("卸载时删除桌面快捷方式", true); cleanStartMenu = Check("卸载时删除开始菜单快捷方式", true); cleanStartup = Check("卸载时删除启动项", true); cleanInstallDir = Check("卸载时删除安装目录（包括用户生成文件）", false);
-        theme = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill, BackColor = Field, ForeColor = TextMain, FlatStyle = FlatStyle.Flat }; theme.Items.AddRange(new object[] { "dark", "light" }); theme.SelectedIndex = 0;
-        AddRow(bp, 0, "安装模式", customInstall); AddRow(bp, 1, "基础安装路径", allowInstallPathSelection); AddRow(bp, 2, "系统 Path", addToSystemPath); AddRow(bp, 3, "Path 路径", systemPathValue); AddRow(bp, 4, "桌面快捷方式", desktop); AddRow(bp, 5, "开始菜单", startMenu); AddRow(bp, 6, "启动项", startup); AddRow(bp, 7, "启动项名称", startupName); AddRow(bp, 8, "启动参数", startupArgs); AddRow(bp, 9, "卸载清理", cleanDesktop); AddRow(bp, 10, "", cleanStartMenu); AddRow(bp, 11, "", cleanStartup); AddRow(bp, 12, "", cleanInstallDir); AddRow(bp, 13, "安装界面主题", theme);
+        customInstall = Check("允许用户自定义安装（路径与可选组件）", true); allowInstallPathSelection = Check("允许基础/快速安装用户选择路径", false); addToSystemPath = Check("将指定路径加入系统 Path（HKLM，需要管理员权限）", false); systemPathValue = TextField("{app}"); desktop = Check("创建桌面快捷方式", true); desktopArgs = TextField(""); startMenu = Check("创建开始菜单快捷方式", true); startMenuArgs = TextField(""); startup = Check("创建当前用户启动项", false); startupName = TextField(""); startupArgs = TextField(""); cleanDesktop = Check("卸载时删除桌面快捷方式", true); cleanStartMenu = Check("卸载时删除开始菜单快捷方式", true); cleanStartup = Check("卸载时删除启动项", true); cleanInstallDir = Check("卸载时删除安装目录（已禁用）", false); cleanInstallDir.Enabled = false;
+        theme = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill, BackColor = Field, ForeColor = TextMain, FlatStyle = FlatStyle.Flat }; theme.Items.AddRange(new object[] { "dark", "light" }); theme.SelectedIndex = 1;
+        AddRow(bp, 0, "安装模式", customInstall); AddRow(bp, 1, "基础安装路径", allowInstallPathSelection); AddRow(bp, 2, "系统 Path", addToSystemPath); AddRow(bp, 3, "Path 路径", systemPathValue); AddRow(bp, 4, "桌面快捷方式", desktop); AddRow(bp, 5, "桌面启动参数", desktopArgs); AddRow(bp, 6, "开始菜单", startMenu); AddRow(bp, 7, "开始菜单参数", startMenuArgs); AddRow(bp, 8, "启动项", startup); AddRow(bp, 9, "启动项名称", startupName); AddRow(bp, 10, "启动项参数", startupArgs); AddRow(bp, 11, "卸载清理", cleanDesktop); AddRow(bp, 12, "", cleanStartMenu); AddRow(bp, 13, "", cleanStartup); AddRow(bp, 14, "", cleanInstallDir); AddRow(bp, 15, "安装界面主题", theme);
     }
     CheckBox Check(string text, bool value) { return new CheckBox { Text = text, Checked = value, AutoSize = true, ForeColor = TextMain, BackColor = Card, FlatStyle = FlatStyle.Flat }; }
     void BuildResourcesPage()
@@ -226,12 +246,12 @@ public class InstallerStudioNative : Form
     bool B(IDictionary<string, object> d, string key) { object v = Get(d, key); return v != null && Convert.ToBoolean(v); }
     void LoadConfig(string path, bool showMessage)
     {
-        try { if (!File.Exists(path)) { if (showMessage) MessageBox.Show("文件不存在：" + path); return; } loadingConfig = true; IDictionary<string, object> d = json.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)) as IDictionary<string, object>; productName.Text = S(d,"productName"); version.Text = S(d,"version"); publisher.Text = S(d,"publisher"); subtitle.Text = S(d,"subtitle"); sourceDir.Text = S(d,"sourceDir"); outputDir.Text = S(d,"outputDir"); installPath.Text = S(d,"installPath"); mainExe.Text = S(d,"mainExe"); iconPath.Text = S(d,"iconPath"); prepLogoPath.Text = S(d,"prepLogoPath"); customInstall.Checked = !d.ContainsKey("allowCustomInstall") || B(d,"allowCustomInstall"); allowInstallPathSelection.Checked = B(d,"allowInstallPathSelection"); addToSystemPath.Checked = B(d,"addToSystemPath"); systemPathValue.Text = d.ContainsKey("systemPathValue") ? S(d,"systemPathValue") : (S(d,"environmentValue").Length > 0 ? S(d,"environmentValue") : "{app}"); desktop.Checked = B(d,"createDesktopShortcut"); startMenu.Checked = B(d,"createStartMenuShortcut"); startup.Checked = B(d,"createStartupEntry"); startupName.Text = S(d,"startupEntryName"); startupArgs.Text = S(d,"startupArguments"); cleanDesktop.Checked = !d.ContainsKey("cleanupDesktopShortcut") || B(d,"cleanupDesktopShortcut"); cleanStartMenu.Checked = !d.ContainsKey("cleanupStartMenuShortcut") || B(d,"cleanupStartMenuShortcut"); cleanStartup.Checked = !d.ContainsKey("cleanupStartupEntry") || B(d,"cleanupStartupEntry"); cleanInstallDir.Checked = B(d,"cleanupInstallDirectory"); int themeIndex = theme.FindStringExact(S(d,"theme")); theme.SelectedIndex = themeIndex >= 0 ? themeIndex : 0; resources.Rows.Clear(); IEnumerable list = Get(d,"optionalComponents") as IEnumerable; if (list != null) foreach (object item in list) { IDictionary<string, object> r = item as IDictionary<string, object>; if (r != null) resources.Rows.Add(S(r,"name"), S(r,"downloadUrl"), S(r,"extractPath"), B(r,"required"), S(r,"sha256")); } loadingConfig = false; if (showMessage) MessageBox.Show("已导入配置。", Text); } catch (Exception ex) { loadingConfig = false; MessageBox.Show("读取配置失败：" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        try { if (!File.Exists(path)) { if (showMessage) MessageBox.Show("文件不存在：" + path); return; } loadingConfig = true; IDictionary<string, object> d = json.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)) as IDictionary<string, object>; productName.Text = S(d,"productName"); productId.Text = S(d,"productId"); if (productId.Text.Length == 0) productId.Text = Guid.NewGuid().ToString().ToUpper(); version.Text = S(d,"version"); publisher.Text = S(d,"publisher"); subtitle.Text = S(d,"subtitle"); sourceDir.Text = S(d,"sourceDir"); outputDir.Text = S(d,"outputDir"); installPath.Text = S(d,"installPath"); mainExe.Text = S(d,"mainExe"); iconPath.Text = S(d,"iconPath"); prepLogoPath.Text = S(d,"prepLogoPath"); customInstall.Checked = !d.ContainsKey("allowCustomInstall") || B(d,"allowCustomInstall"); allowInstallPathSelection.Checked = B(d,"allowInstallPathSelection"); addToSystemPath.Checked = B(d,"addToSystemPath"); systemPathValue.Text = d.ContainsKey("systemPathValue") ? S(d,"systemPathValue") : "{app}"; desktop.Checked = B(d,"createDesktopShortcut"); desktopArgs.Text = S(d,"desktopArguments"); startMenu.Checked = B(d,"createStartMenuShortcut"); startMenuArgs.Text = S(d,"startMenuArguments"); startup.Checked = B(d,"createStartupEntry"); startupName.Text = S(d,"startupEntryName"); startupArgs.Text = S(d,"startupArguments"); cleanDesktop.Checked = !d.ContainsKey("cleanupDesktopShortcut") || B(d,"cleanupDesktopShortcut"); cleanStartMenu.Checked = !d.ContainsKey("cleanupStartMenuShortcut") || B(d,"cleanupStartMenuShortcut"); cleanStartup.Checked = !d.ContainsKey("cleanupStartupEntry") || B(d,"cleanupStartupEntry"); cleanInstallDir.Checked = false; int themeIndex = theme.FindStringExact(S(d,"theme")); theme.SelectedIndex = themeIndex >= 0 ? themeIndex : 1; resources.Rows.Clear(); IEnumerable list = Get(d,"optionalComponents") as IEnumerable; if (list != null) foreach (object item in list) { IDictionary<string, object> r = item as IDictionary<string, object>; if (r != null) resources.Rows.Add(S(r,"name"), S(r,"downloadUrl"), S(r,"extractPath"), B(r,"required"), S(r,"sha256")); } loadingConfig = false; if (showMessage) MessageBox.Show("已加载产品模板。", Text); } catch (Exception ex) { loadingConfig = false; MessageBox.Show("读取配置失败：" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); }
     }
     Dictionary<string, object> Config()
     {
         List<Dictionary<string, object>> list = new List<Dictionary<string, object>>(); foreach (DataGridViewRow row in resources.Rows) if (!row.IsNewRow) { string name = Convert.ToString(row.Cells["name"].Value ?? ""); string url = Convert.ToString(row.Cells["downloadUrl"].Value ?? ""); if (name.Length > 0 || url.Length > 0) list.Add(new Dictionary<string, object> { {"name",name}, {"downloadUrl",url}, {"extractPath",Convert.ToString(row.Cells["extractPath"].Value ?? "")}, {"required",Convert.ToBoolean(row.Cells["required"].Value ?? false)}, {"sha256",Convert.ToString(row.Cells["sha256"].Value ?? "")} }); }
-        return new Dictionary<string, object> { {"productName",productName.Text}, {"version",version.Text}, {"publisher",publisher.Text}, {"subtitle",subtitle.Text}, {"sourceDir",sourceDir.Text}, {"outputDir",outputDir.Text}, {"installPath",installPath.Text}, {"mainExe",mainExe.Text}, {"iconPath",iconPath.Text}, {"prepLogoPath",prepLogoPath.Text}, {"allowCustomInstall",customInstall.Checked}, {"allowInstallPathSelection",allowInstallPathSelection.Checked}, {"addToSystemPath",addToSystemPath.Checked}, {"systemPathValue",systemPathValue.Text}, {"createDesktopShortcut",desktop.Checked}, {"createStartMenuShortcut",startMenu.Checked}, {"createStartupEntry",startup.Checked}, {"startupEntryName",startupName.Text}, {"startupArguments",startupArgs.Text}, {"cleanupDesktopShortcut",cleanDesktop.Checked}, {"cleanupStartMenuShortcut",cleanStartMenu.Checked}, {"cleanupStartupEntry",cleanStartup.Checked}, {"cleanupInstallDirectory",cleanInstallDir.Checked}, {"theme",theme.Text}, {"optionalComponents",list} };
+        return new Dictionary<string, object> { {"schemaVersion",2}, {"productName",productName.Text}, {"productId",productId.Text}, {"upgradeCode",productId.Text}, {"version",version.Text}, {"publisher",publisher.Text}, {"subtitle",subtitle.Text}, {"sourceDir",sourceDir.Text}, {"outputDir",outputDir.Text}, {"installPath",installPath.Text}, {"mainExe",mainExe.Text}, {"iconPath",iconPath.Text}, {"prepLogoPath",prepLogoPath.Text}, {"allowCustomInstall",customInstall.Checked}, {"allowInstallPathSelection",allowInstallPathSelection.Checked}, {"addToSystemPath",addToSystemPath.Checked}, {"systemPathValue",systemPathValue.Text}, {"createDesktopShortcut",desktop.Checked}, {"desktopArguments",desktopArgs.Text}, {"createStartMenuShortcut",startMenu.Checked}, {"startMenuArguments",startMenuArgs.Text}, {"createStartupEntry",startup.Checked}, {"startupEntryName",startupName.Text}, {"startupArguments",startupArgs.Text}, {"cleanupDesktopShortcut",cleanDesktop.Checked}, {"cleanupStartMenuShortcut",cleanStartMenu.Checked}, {"cleanupStartupEntry",cleanStartup.Checked}, {"cleanupInstallDirectory",false}, {"theme",theme.Text}, {"optionalComponents",list} };
     }
     void SaveConfig(string path) { File.WriteAllText(path, json.Serialize(Config()), new UTF8Encoding(false)); }
     void SaveDefaultConfig() { try { SaveConfig(Path.Combine(scriptDir, "build-config.json")); } catch { } }
@@ -242,8 +262,25 @@ public class InstallerStudioNative : Form
         foreach (Control control in AllControls(this)) { TextBox text = control as TextBox; if (text != null) text.TextChanged += delegate { QueueAutoSave(); }; CheckBox check = control as CheckBox; if (check != null) check.CheckedChanged += delegate { QueueAutoSave(); }; ComboBox combo = control as ComboBox; if (combo != null) combo.SelectedIndexChanged += delegate { QueueAutoSave(); }; DataGridView grid = control as DataGridView; if (grid != null) { grid.CellValueChanged += delegate { QueueAutoSave(); }; grid.RowsAdded += delegate { QueueAutoSave(); }; grid.RowsRemoved += delegate { QueueAutoSave(); }; } }
     }
     IEnumerable<Control> AllControls(Control parent) { foreach (Control child in parent.Controls) { yield return child; foreach (Control nested in AllControls(child)) yield return nested; } }
-    void ImportConfig() { string path; if (BrowseFile("导入 build-config.json", scriptDir, "JSON 文件 (*.json)|*.json|所有文件 (*.*)|*.*", out path)) LoadConfig(path, true); }
-    void ExportConfig() { string path; if (SaveFile("导出 build-config.json", scriptDir, "JSON 文件 (*.json)|*.json|所有文件 (*.*)|*.*", "build-config.json", out path)) { SaveConfig(path); MessageBox.Show("配置已导出。", Text); } }
+    string ProfilesDir() { string p = Path.Combine(scriptDir, "profiles"); if (!Directory.Exists(p)) Directory.CreateDirectory(p); return p; }
+    string SafeProfileName(string value) { string s = (value ?? "").Trim(); foreach (char c in Path.GetInvalidFileNameChars()) s = s.Replace(c, '_'); return string.IsNullOrWhiteSpace(s) ? "未命名产品" : s; }
+    void RefreshProfiles()
+    {
+        if (profileList == null) return; string selected = activeProfilePath ?? ""; profileList.Items.Clear();
+        foreach (string path in Directory.GetFiles(ProfilesDir(), "*.json")) profileList.Items.Add(new ProfileItem { Path = path, Name = Path.GetFileNameWithoutExtension(path) });
+        for (int i = 0; i < profileList.Items.Count; i++) if (string.Equals(((ProfileItem)profileList.Items[i]).Path, selected, StringComparison.OrdinalIgnoreCase)) { profileList.SelectedIndex = i; break; }
+    }
+    class ProfileItem { public string Name; public string Path; public override string ToString() { return Name; } }
+    void SaveProfile(bool copy)
+    {
+        string path = activeProfilePath;
+        if (copy || string.IsNullOrEmpty(path)) { string name = SafeProfileName(productName.Text); path = Path.Combine(ProfilesDir(), name + ".json"); int index=2; while(File.Exists(path) && (copy || !string.Equals(path,activeProfilePath,StringComparison.OrdinalIgnoreCase))) { path=Path.Combine(ProfilesDir(),name+"-"+index+".json"); index++; } }
+        SaveConfig(path); activeProfilePath = path; RefreshProfiles(); MessageBox.Show("产品模板已保存：" + Path.GetFileName(path), Text);
+    }
+    void LoadSelectedProfile() { ProfileItem item = profileList == null ? null : profileList.SelectedItem as ProfileItem; if (item == null) { MessageBox.Show("请先选择产品模板。", Text); return; } activeProfilePath=item.Path; LoadConfig(item.Path, true); }
+    void DeleteSelectedProfile() { ProfileItem item = profileList == null ? null : profileList.SelectedItem as ProfileItem; if(item == null) return; if(MessageBox.Show("删除模板“"+item.Name+"”？不会删除产品文件或已生成安装包。",Text,MessageBoxButtons.YesNo,MessageBoxIcon.Warning)!=DialogResult.Yes) return; File.Delete(item.Path); activeProfilePath=null; RefreshProfiles(); }
+    void ImportConfig() { string path; if (BrowseFile("导入产品模板", scriptDir, "JSON 文件 (*.json)|*.json|所有文件 (*.*)|*.*", out path)) { activeProfilePath=null; LoadConfig(path, true); } }
+    void ExportConfig() { string path; if (SaveFile("导出产品模板", ProfilesDir(), "JSON 文件 (*.json)|*.json|所有文件 (*.*)|*.*", SafeProfileName(productName.Text)+".json", out path)) { SaveConfig(path); MessageBox.Show("产品模板已导出。", Text); } }
     void ScanDirectory() { try { if (!Directory.Exists(sourceDir.Text)) throw new DirectoryNotFoundException(sourceDir.Text); long bytes = 0; int count = 0; foreach (string f in Directory.GetFiles(sourceDir.Text, "*", SearchOption.AllDirectories)) { count++; bytes += new FileInfo(f).Length; } scanResult.Text = string.Format("{0:N0} 个文件，{1:N2} MB", count, bytes / 1024.0 / 1024.0); } catch (Exception ex) { scanResult.Text = "扫描失败：" + ex.Message; } }
     string FindIscc()
     {
@@ -307,10 +344,20 @@ public class InstallerStudioNative : Form
             " -InnoBinDir " + PowerShellSingleQuoted(innoDirectory);
         return "-NoProfile -ExecutionPolicy Bypass -EncodedCommand " + Convert.ToBase64String(Encoding.Unicode.GetBytes(command));
     }
+    bool ValidateTemplate(out string message)
+    {
+        message = "";
+        if (string.IsNullOrWhiteSpace(productName.Text) || string.IsNullOrWhiteSpace(productId.Text) || string.IsNullOrWhiteSpace(mainExe.Text)) { message = "请填写产品名称、产品唯一 ID 和主程序 EXE。"; return false; }
+        Guid id; if (!Guid.TryParse(productId.Text.Trim(), out id)) { message = "产品唯一 ID 必须是有效 GUID，用于隔离不同产品的安装与卸载记录。"; return false; }
+        try { string path = Path.GetFullPath(installPath.Text).TrimEnd('\\','/'); string root = Path.GetPathRoot(path).TrimEnd('\\','/'); if (string.Equals(path,root,StringComparison.OrdinalIgnoreCase) || path.Length < root.Length + 4) { message = "默认安装目录不能是磁盘根目录或过浅目录。"; return false; } } catch { message = "默认安装目录无效。"; return false; }
+        if (cleanInstallDir.Checked) { message = "为保护用户文件，模板不允许递归删除安装目录。"; return false; }
+        return true;
+    }
     void StartBuild()
     {
         try
         {
+            string templateError; if (!ValidateTemplate(out templateError)) { MessageBox.Show(templateError, "模板安全检查", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
             if (buildProcess != null && !buildProcess.HasExited) { MessageBox.Show("已有构建任务正在运行。", Text, MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
             if (!Directory.Exists(sourceDir.Text)) { MessageBox.Show("请选择有效的基础程序目录。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
             string iscc = FindIscc();

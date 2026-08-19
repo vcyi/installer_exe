@@ -58,6 +58,8 @@ try {
     $createStartup = [bool]$config.createStartupEntry
     $startupName = [string]$config.startupEntryName
     $startupArgs = [string]$config.startupArguments
+    $desktopArgs = [string]$config.desktopArguments
+    $startMenuArgs = [string]$config.startMenuArguments
     # systemPathValue supersedes legacy environmentValue and is only used for HKLM Path.
     $systemPathValue = [string]$config.systemPathValue
     if (-not $systemPathValue) { $systemPathValue = [string]$config.environmentValue }
@@ -73,14 +75,31 @@ try {
     if (-not $sourceSizeBytes) { $sourceSizeBytes = 0 }
     $stubMB = [math]::Round($sourceSizeBytes / 1MB, 1)
 
-    # Optional components
+    # Optional components: build time queries the remote Content-Length once and embeds it for the custom-install UI.
     $components = @($config.optionalComponents | Where-Object { $_.name -and $_.downloadUrl })
+    foreach ($component in $components) {
+        $component | Add-Member -NotePropertyName sizeBytes -NotePropertyValue 0 -Force
+        try {
+            $request = [System.Net.HttpWebRequest]::Create([string]$component.downloadUrl)
+            $request.Method = 'HEAD'
+            $request.Timeout = 10000
+            $request.ReadWriteTimeout = 10000
+            $response = $request.GetResponse()
+            try { if ($response.ContentLength -gt 0) { $component.sizeBytes = [Int64]$response.ContentLength } }
+            finally { $response.Close() }
+            if ($component.sizeBytes -gt 0) { Add-Log "Component size: $($component.name) = $([math]::Round($component.sizeBytes / 1MB, 1)) MB" }
+        }
+        catch { Add-Log "Component size unavailable: $($component.name)" }
+    }
 
     $base = ($name + '-Setup-' + $version) -replace '[\\/:*?"<>|]', '_'
     # ISCC may not handle non-ASCII in OutputBaseFilename; use ASCII-safe name and rename after
     $baseSafe = $base -replace '[^\x20-\x7E]', '_'
-    $appId = ([string]$config.upgradeCode).Trim('{}')
-    if (-not $appId) { $appId = [Guid]::NewGuid().ToString().ToUpper() }
+    $appId = ([string]$config.productId).Trim('{}')
+    if (-not $appId) { $appId = ([string]$config.upgradeCode).Trim('{}') }
+    $parsedProductId = [Guid]::Empty
+    if (-not [Guid]::TryParse($appId, [ref]$parsedProductId)) { throw '产品唯一 ID 无效。每个产品模板必须配置独立 GUID，构建已停止。' }
+    $appId = $parsedProductId.ToString().ToUpper()
 
     New-Item -ItemType Directory -Force -Path $out | Out-Null
 
@@ -97,17 +116,28 @@ try {
 
     $progress = 10
     Add-Log "Copying source files to build temp..."
-    Copy-Item -LiteralPath $config.sourceDir -Destination $sourceTemp -Recurse -Force
+    # 逐项复制源目录的内容，不额外包一层源目录名；确保 mainExe 相对路径与实际安装路径一致。
+    Get-ChildItem -LiteralPath $config.sourceDir -Force | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $sourceTemp -Recurse -Force
+    }
+    if ($mainExe) {
+        $mainExeCheck = Join-Path $sourceTemp $mainExe
+        if (-not (Test-Path -LiteralPath $mainExeCheck -PathType Leaf)) { throw "主程序未在源目录根级找到：$mainExe。请填写相对于基础程序目录的正确路径。" }
+        Add-Log "Main executable verified: $mainExe"
+    }
     Add-Log "Source files copied"
 
     # --- Build config JSON ---
     $configObj = @{
         productName = $name
+        productId = $appId
+        upgradeCode = $appId
         version = $version
         publisher = $publisher
         subtitle = $subtitle
         installPath = $installPath
         mainExe = $mainExe
+        controlPanelIcon = $(if ([string]$config.iconPath) { 'installer-product-icon.ico' } else { '' })
         allowCustomInstall = $allowCustom
         allowInstallPathSelection = $allowInstallPathSelection
         addToSystemPath = $addToSystemPath
@@ -116,6 +146,8 @@ try {
         createStartupEntry = $createStartup
         startupEntryName = $startupName
         startupArguments = $startupArgs
+        desktopArguments = $desktopArgs
+        startMenuArguments = $startMenuArgs
         systemPathValue = $systemPathValue
         cleanupDesktopShortcut = $cleanupDesktop
         cleanupStartMenuShortcut = $cleanupStartMenu
@@ -123,7 +155,7 @@ try {
         cleanupInstallDirectory = $cleanupInstallDir
         stubMB = $stubMB
         optionalComponents = @($components | ForEach-Object {
-            @{ name=$_.name; downloadUrl=$_.downloadUrl; extractPath=[string]$_.extractPath; sha256=[string]$_.sha256; required=[bool]$_.required }
+            @{ name=$_.name; downloadUrl=$_.downloadUrl; extractPath=[string]$_.extractPath; sha256=[string]$_.sha256; required=[bool]$_.required; sizeBytes=[Int64]$_.sizeBytes }
         })
     }
     $configJsonStr = $configObj | ConvertTo-Json -Depth 5 -Compress
@@ -151,8 +183,30 @@ try {
     ) | Where-Object { Test-Path $_ } | Select-Object -First 1
     if (-not $csc) { throw 'C# compiler (csc.exe) not found' }
 
+    # 同一份品牌 Logo 同时嵌入准备窗口和客户端安装窗口。
+    $prepLogoFile = ''
+    $prepLogoPath = [string]$config.prepLogoPath
+    if ($prepLogoPath) {
+        if (-not (Test-Path -LiteralPath $prepLogoPath -PathType Leaf)) { throw "Preparation logo not found: $prepLogoPath" }
+        $extension = [IO.Path]::GetExtension($prepLogoPath).ToLowerInvariant()
+        if ($extension -notin @('.png', '.jpg', '.jpeg', '.bmp')) { throw 'Preparation logo must be PNG, JPG or BMP.' }
+        $prepLogoFile = Join-Path $buildTemp ('preparation-logo' + $extension)
+        Copy-Item -LiteralPath $prepLogoPath -Destination $prepLogoFile -Force
+        # 裁去接近白色的无效画布边距，让Logo主体与统一左对齐栅格真正对齐。
+        try {
+            Add-Type -AssemblyName System.Drawing
+            $image = [Drawing.Bitmap]::FromFile($prepLogoFile)
+            $left=$image.Width; $top=$image.Height; $right=-1; $bottom=-1
+            for($y=0; $y -lt $image.Height; $y++){ for($x=0; $x -lt $image.Width; $x++){ $p=$image.GetPixel($x,$y); if($p.A -gt 10 -and ($p.R -lt 245 -or $p.G -lt 245 -or $p.B -lt 245)){ if($x -lt $left){$left=$x}; if($x -gt $right){$right=$x}; if($y -lt $top){$top=$y}; if($y -gt $bottom){$bottom=$y} } } }
+            if($right -ge $left -and $bottom -ge $top){ $pad=8; $rect=New-Object Drawing.Rectangle([math]::Max(0,$left-$pad),[math]::Max(0,$top-$pad),[math]::Min($image.Width,$right-$left+1+$pad*2),[math]::Min($image.Height,$bottom-$top+1+$pad*2)); $cropped=New-Object Drawing.Bitmap($rect.Width,$rect.Height); $graphics=[Drawing.Graphics]::FromImage($cropped); $graphics.DrawImage($image,(New-Object Drawing.Rectangle(0,0,$cropped.Width,$cropped.Height)),$rect,[Drawing.GraphicsUnit]::Pixel); $graphics.Dispose(); $image.Dispose(); $cropped.Save($prepLogoFile,[Drawing.Imaging.ImageFormat]::Png); $cropped.Dispose(); Add-Log 'Preparation logo cropped to visible content' } else { $image.Dispose() }
+        } catch { Add-Log 'Preparation logo crop skipped' }
+        Add-Log "Preparation logo: $prepLogoPath"
+    }
+
     $appExePath = Join-Path $buildTemp 'installer-app.exe'
-    $cscArgs = '/nologo /target:winexe /optimize+ /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll /out:"' + $appExePath + '" "' + $csPath + '"'
+    $cscArgs = '/nologo /target:winexe /optimize+ /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll '
+    if ($prepLogoFile) { $cscArgs += "/resource:`"$prepLogoFile`",preparation-logo " }
+    $cscArgs += '/out:"' + $appExePath + '" "' + $csPath + '"'
     Add-Log "Compiling: csc $cscArgs"
 
     $cscPsi = New-Object System.Diagnostics.ProcessStartInfo
@@ -187,19 +241,8 @@ try {
         Add-Log "Icon: $iconPath"
     }
 
+    if ($iconFile) { Copy-Item -LiteralPath $iconFile -Destination (Join-Path $sourceTemp 'installer-product-icon.ico') -Force }
     $iconLine = if ($iconFile) { "SetupIconFile=$iconFile`r`n" } else { '' }
-
-    # 可选的准备界面 Logo：先复制到独立构建目录，避免编译期间占用原始文件。
-    $prepLogoFile = ''
-    $prepLogoPath = [string]$config.prepLogoPath
-    if ($prepLogoPath) {
-        if (-not (Test-Path -LiteralPath $prepLogoPath -PathType Leaf)) { throw "Preparation logo not found: $prepLogoPath" }
-        $extension = [IO.Path]::GetExtension($prepLogoPath).ToLowerInvariant()
-        if ($extension -notin @('.png', '.jpg', '.jpeg', '.bmp')) { throw 'Preparation logo must be PNG, JPG or BMP.' }
-        $prepLogoFile = Join-Path $buildTemp ('preparation-logo' + $extension)
-        Copy-Item -LiteralPath $prepLogoPath -Destination $prepLogoFile -Force
-        Add-Log "Preparation logo: $prepLogoPath"
-    }
 
     $iss = @"
 [Setup]
@@ -218,8 +261,9 @@ DisableFinishedPage=yes
 DisableStartupPrompt=yes
 OutputDir=$out
 OutputBaseFilename=setup-payload
-Compression=lzma2/ultra64
-SolidCompression=yes
+; normal 压缩档位减少启动时的解压 CPU 开销，优先缩短首次打开安装界面的等待时间。
+Compression=lzma2/normal
+SolidCompression=no
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -289,6 +333,9 @@ end;
     $launcherTemplate = Join-Path $ScriptDir 'launcher.cs'
     if (-not (Test-Path $launcherTemplate)) { throw 'launcher.cs template not found' }
     $launcherContent = [IO.File]::ReadAllText($launcherTemplate, [Text.Encoding]::UTF8)
+    $launcherContent = $launcherContent.Replace('__PRODUCT_NAME__', $name.Replace('"', '\"'))
+    $launcherContent = $launcherContent.Replace('__PRODUCT_VERSION__', $version.Replace('"', '\"'))
+    $launcherContent = $launcherContent.Replace('__PRODUCT_SUBTITLE__', $subtitle.Replace('"', '\"'))
     $launcherPath = Join-Path $buildTemp 'launcher.cs'
     [IO.File]::WriteAllText($launcherPath, $launcherContent, (New-Object Text.UTF8Encoding $true))
 

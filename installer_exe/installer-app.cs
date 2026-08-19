@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO.Compression;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Runtime.InteropServices;
@@ -23,7 +24,8 @@ namespace InstallerApp
         [STAThread]
         static void Main(string[] args)
         {
-            WriteReadyFile(GetReadyFilePath(args));
+            if (args != null && args.Length == 4 && string.Equals(args[0], "--cleanup", StringComparison.OrdinalIgnoreCase)) { InstallerMaintenance.RunCleanupHelper(args[1], args[2], args[3]); return; }
+            string readyFile = GetReadyFilePath(args);
             bool uninstallRequested = args != null && args.Length > 0 && string.Equals(args[0], "--uninstall", StringComparison.OrdinalIgnoreCase);
             bool uninstallCopy = Path.GetFileNameWithoutExtension(Application.ExecutablePath).EndsWith("-uninstall", StringComparison.OrdinalIgnoreCase);
             if (uninstallRequested || uninstallCopy)
@@ -34,6 +36,9 @@ namespace InstallerApp
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             var form = new InstallerForm();
+            bool previewComplete = args != null && args.Any(a => string.Equals(a, "--preview-complete", StringComparison.OrdinalIgnoreCase));
+            // 只有主窗体真正显示后才通知准备界面，保证 100% 与安装窗口出现同步。
+            form.Shown += (s, e) => { WriteReadyFile(readyFile); if (previewComplete) form.ShowCompletePreview(); };
             Application.Run(form);
         }
 
@@ -65,6 +70,12 @@ namespace InstallerApp
         }
     }
 
+    class OwnedFile
+    {
+        public string relativePath;
+        public string sha256;
+    }
+
     class InstallerForm : Form
     {
         const string ConfigJson = @"__CONFIG_JSON__";
@@ -72,6 +83,8 @@ namespace InstallerApp
         Dictionary<string, object> cfg;
         string productName = "Application";
         string version = "1.0.0";
+        string productId = "";
+        string detectedUpgradePath = "";
         string installPath = "";
         string mainExe = "";
         bool allowCustomInstall = true;
@@ -86,7 +99,10 @@ namespace InstallerApp
         bool cleanupInstallDir = false;
         string startupName = "";
         string startupArgs = "";
+        string desktopArgs = "";
+        string startMenuArgs = "";
         string systemPathValue = "{app}";
+        string controlPanelIcon = "";
         string sourceDir = "";
         List<CompInfo> components = new List<CompInfo>();
 
@@ -100,6 +116,7 @@ namespace InstallerApp
         Label titleLabel;
         Button closeBtn;
         Panel content;
+        Panel pageHost;
         Label statusLabel;
 
         // Welcome screen
@@ -107,6 +124,7 @@ namespace InstallerApp
         Label productLabel;
         Label versionLabel;
         Label subtitleLabel;
+        PictureBox productLogo;
         Button quickBtn;
         Button customBtn;
 
@@ -119,6 +137,8 @@ namespace InstallerApp
 
         // Custom screen
         Panel customPanel;
+        Panel customHeaderPanel;
+        Panel customOptionsPanel;
         TextBox pathBox;
         Button browseBtn;
         Panel compPanel;
@@ -133,6 +153,7 @@ namespace InstallerApp
 
         // Complete screen
         Panel completePanel;
+        Panel completeContent;
         Label completeLabel;
         Label completeDetail;
         Button finishBtn;
@@ -140,16 +161,16 @@ namespace InstallerApp
         // Installation
         BackgroundWorker worker;
 
-        // 客户端统一使用浅色主题，避免配置为 light 时仍沿用深色配色。
-        static readonly Color BG = ColorTranslator.FromHtml("#f7f8f6");
-        static readonly Color BG2 = ColorTranslator.FromHtml("#ffffff");
+        // Apple-inspired light system: frosted white layers, iOS blue accent and quiet contrast.
+        static readonly Color BG = ColorTranslator.FromHtml("#f2f4fa");
+        static readonly Color BG2 = ColorTranslator.FromHtml("#fafbff");
         static readonly Color Surface = ColorTranslator.FromHtml("#ffffff");
-        static readonly Color Cyan = ColorTranslator.FromHtml("#0d9488");
-        static readonly Color CyanDim = ColorTranslator.FromHtml("#0f766e");
-        static readonly Color Text0 = ColorTranslator.FromHtml("#1c2b3a");
-        static readonly Color Text1 = ColorTranslator.FromHtml("#334155");
-        static readonly Color Text2 = ColorTranslator.FromHtml("#64748b");
-        static readonly Color Border = ColorTranslator.FromHtml("#dae2e8");
+        static readonly Color Cyan = ColorTranslator.FromHtml("#0a84ff");
+        static readonly Color CyanDim = ColorTranslator.FromHtml("#006ee6");
+        static readonly Color Text0 = ColorTranslator.FromHtml("#1c1c1e");
+        static readonly Color Text1 = ColorTranslator.FromHtml("#3a3a3c");
+        static readonly Color Text2 = ColorTranslator.FromHtml("#6e6e73");
+        static readonly Color Border = ColorTranslator.FromHtml("#dee3ee");
         static readonly Color Emerald = ColorTranslator.FromHtml("#10b981");
         static readonly Color Error = ColorTranslator.FromHtml("#dc2626");
         bool installSucceeded = true;
@@ -165,9 +186,45 @@ namespace InstallerApp
             SetupForm();
             BuildTitleBar();
             BuildContent();
+            Shown += (s, e) => BeginInvoke((Action)LayoutResponsiveControls);
             ShowWelcome();
         }
 
+        string ProductUninstallRegistryPath() { return @"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + productId; }
+        string FindExistingInstallPath()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(ProductUninstallRegistryPath()))
+                {
+                    string path = key == null ? "" : Convert.ToString(key.GetValue("InstallLocation", ""));
+                    if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return "";
+                    string manifest = Path.Combine(path, ".installer-uninstall.json");
+                    if (!File.Exists(manifest)) return "";
+                    var record = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(manifest));
+                    string recordedId = GetStr(record, "productId", "").Trim().Trim('{', '}');
+                    string recordedPath = GetStr(record, "installPath", "");
+                    if (!string.Equals(recordedId, productId, StringComparison.OrdinalIgnoreCase)) return "";
+                    if (!string.Equals(Path.GetFullPath(recordedPath).TrimEnd('\\'), Path.GetFullPath(path).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) return "";
+                    return path;
+                }
+            }
+            catch { return ""; }
+        }
+        bool IsForeignProductDirectory(string path, out string owner)
+        {
+            owner = "";
+            try
+            {
+                string manifest = Path.Combine(path, ".installer-uninstall.json");
+                if (!File.Exists(manifest)) return false;
+                var record = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(manifest));
+                string recordedId = GetStr(record, "productId", "").Trim().Trim('{', '}');
+                owner = GetStr(record, "productName", "其他产品");
+                return !string.Equals(recordedId, productId, StringComparison.OrdinalIgnoreCase);
+            }
+            catch { owner = "未知产品"; return true; }
+        }
         void ParseConfig()
         {
             try
@@ -176,6 +233,9 @@ namespace InstallerApp
                 cfg = js.Deserialize<Dictionary<string, object>>(ConfigJson);
                 productName = GetStr(cfg, "productName", "Application");
                 version = GetStr(cfg, "version", "1.0.0");
+                productId = GetStr(cfg, "productId", GetStr(cfg, "upgradeCode", "")).Trim().Trim('{', '}').ToUpperInvariant();
+                Guid parsedProductId; if (!Guid.TryParse(productId, out parsedProductId)) throw new InvalidDataException("产品唯一 ID 无效，已停止安装。");
+                productId = parsedProductId.ToString("D").ToUpperInvariant();
                 installPath = GetStr(cfg, "installPath", @"C:\Program Files\" + productName);
                 mainExe = GetStr(cfg, "mainExe", "");
                 allowCustomInstall = GetBool(cfg, "allowCustomInstall", true);
@@ -190,8 +250,13 @@ namespace InstallerApp
                 cleanupInstallDir = GetBool(cfg, "cleanupInstallDirectory", false);
                 startupName = GetStr(cfg, "startupEntryName", productName);
                 startupArgs = GetStr(cfg, "startupArguments", "");
+                desktopArgs = GetStr(cfg, "desktopArguments", "");
+                startMenuArgs = GetStr(cfg, "startMenuArguments", "");
                 systemPathValue = GetStr(cfg, "systemPathValue", GetStr(cfg, "environmentValue", "{app}"));
+                controlPanelIcon = GetStr(cfg, "controlPanelIcon", "");
                 selectedPath = installPath;
+                detectedUpgradePath = FindExistingInstallPath();
+                if (!string.IsNullOrEmpty(detectedUpgradePath)) { installPath = detectedUpgradePath; selectedPath = detectedUpgradePath; }
                 sourceDir = Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "source");
 
                 if (cfg.ContainsKey("optionalComponents"))
@@ -211,6 +276,7 @@ namespace InstallerApp
                                 downloadUrl = GetStr(d, "downloadUrl", ""),
                                 extractPath = GetStr(d, "extractPath", ""),
                                 sha256 = GetStr(d, "sha256", ""),
+                                sizeBytes = GetLong(d, "sizeBytes", 0),
                                 required = GetBool(d, "required", false)
                             });
                         }
@@ -234,6 +300,19 @@ namespace InstallerApp
         {
             if (d.ContainsKey(key) && d[key] is bool) return (bool)d[key];
             return def;
+        }
+
+        long GetLong(Dictionary<string, object> d, string key, long def)
+        {
+            if (!d.ContainsKey(key) || d[key] == null) return def;
+            try { return Convert.ToInt64(d[key]); } catch { return def; }
+        }
+
+        string FormatSize(long bytes)
+        {
+            if (bytes <= 0) return "大小未知";
+            if (bytes < 1024 * 1024) return Math.Max(1, bytes / 1024) + " KB";
+            return (bytes / 1024d / 1024d).ToString(bytes >= 100 * 1024 * 1024 ? "0" : "0.0") + " MB";
         }
 
         [Flags]
@@ -284,8 +363,13 @@ namespace InstallerApp
         void SetupForm()
         {
             Text = productName + " | 安装程序";
-            Size = new Size(760, 500);
-            MinimumSize = new Size(560, 420);
+            AutoScaleMode = AutoScaleMode.Dpi;
+            // 根据当前工作区限制窗口高度，避免高 DPI 或任务栏环境下窗口超出屏幕而裁切顶部、底部控件。
+            Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
+            int targetWidth = Math.Min(800, Math.Max(680, workArea.Width - 40));
+            int targetHeight = Math.Min(540, Math.Max(440, workArea.Height - 40));
+            Size = new Size(targetWidth, targetHeight);
+            MinimumSize = new Size(Math.Min(680, workArea.Width), Math.Min(440, workArea.Height));
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.None;
             BackColor = BG;
@@ -295,7 +379,8 @@ namespace InstallerApp
 
         void BuildTitleBar()
         {
-            titleBar = new Panel { Dock = DockStyle.Top, Height = 42, BackColor = BG2 };
+            // 使用固定顶部区域而非 Dock，彻底隔离标题栏与内容区，避免控件添加顺序导致叠压。
+            titleBar = new Panel { Height = 42, BackColor = BG2, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
             titleBar.Paint += (s, e) =>
             {
                 using (var pen = new Pen(Border, 1))
@@ -310,42 +395,50 @@ namespace InstallerApp
                 }
             };
 
+            // 左侧三色圆点仅作视觉元素；右上角提供符合 Windows 习惯的明确关闭按钮。
+            Panel redDot = new Panel { BackColor = ColorTranslator.FromHtml("#ff5f57"), Size = new Size(14, 14), Location = new Point(16, 14) };
+            Panel minDot = new Panel { BackColor = ColorTranslator.FromHtml("#ffbd2e"), Size = new Size(14, 14), Location = new Point(38, 14) };
+            Panel zoomDot = new Panel { BackColor = ColorTranslator.FromHtml("#28c840"), Size = new Size(14, 14), Location = new Point(60, 14) };
+            closeBtn = new Button
+            {
+                Text = "×",
+                Font = new Font("Segoe UI", 14F, FontStyle.Regular),
+                FlatStyle = FlatStyle.Flat,
+                ForeColor = Text2,
+                BackColor = Color.Transparent,
+                Size = new Size(38, 30),
+                Cursor = Cursors.Hand
+            };
+            closeBtn.FlatAppearance.BorderSize = 0;
+            closeBtn.FlatAppearance.MouseOverBackColor = ColorTranslator.FromHtml("#f1f3f7");
+            closeBtn.Click += (s, e) => Close();
             titleLabel = new Label
             {
                 Text = productName + " · 安装程序",
                 Font = MainFont,
                 ForeColor = Text1,
-                Location = new Point(20, 12),
                 AutoSize = true,
-                BackColor = Color.Transparent
-            };
-            titleBar.Controls.Add(titleLabel);
-
-            closeBtn = new Button
-            {
-                Text = "×",
-                Font = new Font("Microsoft YaHei", 12F),
-                ForeColor = Text2,
                 BackColor = Color.Transparent,
-                FlatStyle = FlatStyle.Flat,
-                Size = new Size(36, 30),
-                Location = new Point(720, 6),
-                Cursor = Cursors.Hand
+                Location = new Point(90, 12)
             };
-            closeBtn.FlatAppearance.BorderSize = 0;
-            closeBtn.FlatAppearance.MouseOverBackColor = ColorTranslator.FromHtml("#e74c3c");
-            closeBtn.Click += (s, e) => Close();
+            titleBar.Controls.Add(redDot);
+            titleBar.Controls.Add(minDot);
+            titleBar.Controls.Add(zoomDot);
             titleBar.Controls.Add(closeBtn);
-            titleBar.Resize += (s, e) => closeBtn.Left = Math.Max(0, titleBar.ClientSize.Width - closeBtn.Width - 6);
-
+            titleBar.Controls.Add(titleLabel);
+            titleBar.Resize += (s, e) => closeBtn.Location = new Point(Math.Max(0, titleBar.ClientSize.Width - closeBtn.Width - 8), 6);
+            titleBar.Location = new Point(0, 0);
+            titleBar.Width = ClientSize.Width;
             Controls.Add(titleBar);
         }
 
         void BuildContent()
         {
-            content = new Panel { Dock = DockStyle.Fill, BackColor = BG };
+            // 内容区从标题栏下方开始，以独立坐标和锚点维护，不依赖 Dock 的控件层级顺序。
+            content = new Panel { Location = new Point(0, 42), Size = new Size(ClientSize.Width, Math.Max(0, ClientSize.Height - 42)), BackColor = BG, Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right };
 
-            // Status label at bottom
+            // 页面承载区与状态栏分别停靠，状态栏不再覆盖页面底部的操作按钮。
+            pageHost = new Panel { Dock = DockStyle.Fill, BackColor = BG };
             statusLabel = new Label
             {
                 Dock = DockStyle.Bottom,
@@ -357,6 +450,7 @@ namespace InstallerApp
                 Padding = new Padding(20, 0, 0, 0),
                 BackColor = BG2
             };
+            content.Controls.Add(pageHost);
             content.Controls.Add(statusLabel);
 
             BuildWelcomePanel();
@@ -370,39 +464,46 @@ namespace InstallerApp
             LayoutResponsiveControls();
         }
 
+        Image LoadPreparationLogo()
+        {
+            try
+            {
+                var stream = typeof(InstallerForm).Assembly.GetManifestResourceStream("preparation-logo");
+                if (stream == null) return null;
+                using (stream) return Image.FromStream(stream);
+            }
+            catch { return null; }
+        }
+
         void BuildWelcomePanel()
         {
             welcomePanel = new Panel { Dock = DockStyle.Fill, BackColor = BG };
 
-            var iconPanel = new Panel
+            productLogo = new PictureBox
             {
-                Size = new Size(64, 64),
-                Location = new Point(40, 50),
-                BackColor = Color.Transparent
+                Size = new Size(230, 92),
+                Location = new Point(40, 36),
+                SizeMode = PictureBoxSizeMode.Zoom,
+                BackColor = Color.Transparent,
+                Image = LoadPreparationLogo()
             };
-            iconPanel.Paint += (s, e) =>
+            welcomePanel.Controls.Add(productLogo);
+            if (productLogo.Image == null)
             {
-                var g = e.Graphics;
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                using (var brush = new LinearGradientBrush(new Rectangle(0, 0, 64, 64), Cyan, CyanDim, LinearGradientMode.Vertical))
+                productLogo.Paint += (s, e) =>
                 {
-                    var path = RoundRect(new Rectangle(0, 0, 64, 64), 14);
-                    g.FillPath(brush, path);
-                }
-                using (var brush = new SolidBrush(Color.White))
-                {
-                    var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                    g.DrawString(productName.Substring(0, 1), new Font("Microsoft YaHei", 24F, FontStyle.Bold), brush, new RectangleF(0, 0, 64, 64), sf);
-                }
-            };
-            welcomePanel.Controls.Add(iconPanel);
+                    var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+                    using (var brush = new LinearGradientBrush(productLogo.ClientRectangle, Cyan, CyanDim, LinearGradientMode.Vertical)) g.FillPath(brush, RoundRect(productLogo.ClientRectangle, 18));
+                    using (var brush = new SolidBrush(Color.White)) { var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center }; g.DrawString(productName.Substring(0, 1), new Font("Microsoft YaHei", 30F, FontStyle.Bold), brush, productLogo.ClientRectangle, sf); }
+                };
+            }
 
             productLabel = new Label
             {
                 Text = productName,
                 Font = BigFont,
                 ForeColor = Text0,
-                Location = new Point(120, 45),
+                Location = new Point(142, 48),
                 AutoSize = true,
                 BackColor = Color.Transparent
             };
@@ -413,7 +514,7 @@ namespace InstallerApp
                 Text = "版本 " + version,
                 Font = SmallFont,
                 ForeColor = Cyan,
-                Location = new Point(122, 80),
+                Location = new Point(144, 84),
                 AutoSize = true,
                 BackColor = Color.Transparent
             };
@@ -421,7 +522,7 @@ namespace InstallerApp
 
             subtitleLabel = new Label
             {
-                Text = "选择安装方式以继续",
+                Text = string.IsNullOrEmpty(detectedUpgradePath) ? "安全、快速、简洁的安装体验" : "检测到已安装版本，将更新至原安装目录", 
                 Font = MainFont,
                 ForeColor = Text2,
                 Location = new Point(40, 140),
@@ -443,7 +544,7 @@ namespace InstallerApp
             customBtn.Visible = allowCustomInstall;
             welcomePanel.Controls.Add(customBtn);
 
-            content.Controls.Add(welcomePanel);
+            pageHost.Controls.Add(welcomePanel);
         }
 
         Button CreateActionButton(string title, string desc, bool primary)
@@ -453,7 +554,7 @@ namespace InstallerApp
                 Size = new Size(680, 80),
                 FlatStyle = FlatStyle.Flat,
                 Cursor = Cursors.Hand,
-                BackColor = primary ? Color.FromArgb(229, 246, 243) : Surface,
+                BackColor = primary ? Color.FromArgb(222, 237, 255) : Surface,
                 ForeColor = Text0,
                 TextAlign = ContentAlignment.MiddleLeft,
                 Font = MainFont,
@@ -461,7 +562,7 @@ namespace InstallerApp
             };
             btn.FlatAppearance.BorderSize = 1;
             btn.FlatAppearance.BorderColor = primary ? Cyan : Border;
-            btn.FlatAppearance.MouseOverBackColor = primary ? Color.FromArgb(209, 234, 229) : Color.FromArgb(244, 247, 249);
+            btn.FlatAppearance.MouseOverBackColor = primary ? Color.FromArgb(202, 225, 255) : Color.FromArgb(246, 248, 253);
 
             btn.Paint += (s, e) =>
             {
@@ -485,11 +586,12 @@ namespace InstallerApp
 
         void BuildQuickPathPanel()
         {
-            quickPathPanel = new Panel { Dock = DockStyle.Fill, BackColor = BG, Visible = false, Padding = new Padding(40, 30, 40, 20) };
-            var heading = new Label { Text = "选择安装路径", Font = TitleFont, ForeColor = Text0, Dock = DockStyle.Top, Height = 30, BackColor = Color.Transparent };
-            var detail = new Label { Text = "快速安装将仅安装基础运行环境。", Font = MainFont, ForeColor = Text2, Dock = DockStyle.Top, Height = 30, BackColor = Color.Transparent };
-            var pathLabel = new Label { Text = "安装路径", Font = MainFont, ForeColor = Text1, Dock = DockStyle.Top, Height = 28, BackColor = Color.Transparent };
-            var pathRow = new Panel { Dock = DockStyle.Top, Height = 38, BackColor = Color.Transparent };
+            quickPathPanel = new Panel { Dock = DockStyle.Fill, BackColor = BG, Visible = false };
+            // 使用明确的内容坐标，避免多层 Dock 在标题栏下发生叠压并裁切页面标题。
+            var heading = new Label { Text = "选择安装路径", Font = TitleFont, ForeColor = Text0, Location = new Point(40, 30), Size = new Size(620, 32), BackColor = Color.Transparent, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+            var detail = new Label { Text = "快速安装将仅安装基础运行环境。", Font = MainFont, ForeColor = Text2, Location = new Point(40, 70), Size = new Size(620, 26), BackColor = Color.Transparent, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+            var pathLabel = new Label { Text = "安装路径", Font = MainFont, ForeColor = Text1, Location = new Point(40, 112), Size = new Size(620, 25), BackColor = Color.Transparent, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+            var pathRow = new Panel { Location = new Point(40, 142), Size = new Size(680, 38), BackColor = Color.Transparent, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
             quickPathBox = new TextBox { Dock = DockStyle.Fill, Font = MainFont, ForeColor = Text0, BackColor = Surface, BorderStyle = BorderStyle.FixedSingle, Text = selectedPath };
             quickPathBox.TextChanged += (s, e) => selectedPath = quickPathBox.Text;
             quickBrowseBtn = new Button { Text = "浏览", Dock = DockStyle.Right, Width = 90, Font = MainFont, ForeColor = Cyan, BackColor = Surface, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
@@ -497,7 +599,7 @@ namespace InstallerApp
             quickBrowseBtn.Click += (s, e) => { string path; if (BrowseFolder("选择安装路径", selectedPath, out path)) { selectedPath = path; quickPathBox.Text = path; } };
             pathRow.Controls.Add(quickPathBox);
             pathRow.Controls.Add(quickBrowseBtn);
-            var actions = new Panel { Dock = DockStyle.Bottom, Height = 48, BackColor = Color.Transparent };
+            var actions = new Panel { Dock = DockStyle.Bottom, Height = 62, Padding = new Padding(40, 8, 40, 10), BackColor = Color.Transparent };
             quickBackBtn = new Button { Text = "返回", Location = new Point(0, 5), Size = new Size(100, 38), Font = MainFont, ForeColor = Text2, BackColor = Surface, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
             quickBackBtn.FlatAppearance.BorderColor = Border;
             quickBackBtn.Click += (s, e) => ShowWelcome();
@@ -510,14 +612,14 @@ namespace InstallerApp
             quickPathPanel.Controls.Add(pathLabel);
             quickPathPanel.Controls.Add(detail);
             quickPathPanel.Controls.Add(heading);
-            content.Controls.Add(quickPathPanel);
+            pageHost.Controls.Add(quickPathPanel);
         }
 
         void BuildCustomPanel()
         {
             customPanel = new Panel { Dock = DockStyle.Fill, BackColor = BG, Visible = false };
 
-            var headerPanel = new Panel { Dock = DockStyle.Top, Height = 78, Padding = new Padding(40, 20, 40, 0), BackColor = Color.Transparent };
+            customHeaderPanel = new Panel { Dock = DockStyle.Top, Height = 70, Padding = new Padding(40, 20, 40, 0), BackColor = Color.Transparent };
             var heading = new Label
             {
                 Text = "自定义安装",
@@ -525,27 +627,24 @@ namespace InstallerApp
                 ForeColor = Text0,
                 Dock = DockStyle.Top,
                 Height = 27,
-                AutoEllipsis = false,
                 BackColor = Color.Transparent
             };
-            var pathLabel = new Label
+            var subLabel = new Label
             {
                 Text = "选择安装路径和可选组件",
                 Font = MainFont,
                 ForeColor = Text2,
                 Dock = DockStyle.Top,
                 Height = 25,
-                AutoEllipsis = false,
                 BackColor = Color.Transparent
             };
-            headerPanel.Controls.Add(pathLabel);
-            headerPanel.Controls.Add(heading);
+            customHeaderPanel.Controls.Add(subLabel);
+            customHeaderPanel.Controls.Add(heading);
 
-            var optionsPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(40, 8, 40, 10), BackColor = Color.Transparent };
-            customPanel.Controls.Add(optionsPanel);
-            customPanel.Controls.Add(headerPanel);
+            customOptionsPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(40, 8, 40, 10), BackColor = Color.Transparent };
+            customPanel.Controls.Add(customOptionsPanel);
+            customPanel.Controls.Add(customHeaderPanel);
 
-            // Path selection
             var installPathLabel = new Label
             {
                 Text = "安装路径",
@@ -553,16 +652,14 @@ namespace InstallerApp
                 ForeColor = Text1,
                 Dock = DockStyle.Top,
                 Height = 25,
-                AutoEllipsis = false,
                 BackColor = Color.Transparent
             };
-            optionsPanel.Controls.Add(installPathLabel);
 
+            var pathRow = new Panel { Dock = DockStyle.Top, Height = 34, BackColor = Color.Transparent };
             pathBox = new TextBox
             {
-                Location = new Point(0, 28),
-                Size = new Size(540, 32),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0),
                 Font = MainFont,
                 ForeColor = Text0,
                 BackColor = Surface,
@@ -570,14 +667,12 @@ namespace InstallerApp
                 Text = selectedPath
             };
             pathBox.TextChanged += (s, e) => selectedPath = pathBox.Text;
-            optionsPanel.Controls.Add(pathBox);
-
             browseBtn = new Button
             {
                 Text = "浏览",
-                Location = new Point(550, 27),
-                Size = new Size(90, 34),
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                Dock = DockStyle.Right,
+                Width = 90,
+                Margin = new Padding(0),
                 Font = MainFont,
                 ForeColor = Cyan,
                 BackColor = Surface,
@@ -594,39 +689,36 @@ namespace InstallerApp
                     pathBox.Text = selectedPath;
                 }
             };
-            optionsPanel.Controls.Add(browseBtn);
+            pathRow.Controls.Add(pathBox);
+            pathRow.Controls.Add(browseBtn);
 
-            // Components
+            var spacer = new Panel { Dock = DockStyle.Top, Height = 10, BackColor = Color.Transparent };
+
             var compLabel = new Label
             {
                 Text = "可选组件",
                 Font = MainFont,
                 ForeColor = Text1,
-                Location = new Point(0, 78),
-                AutoSize = true,
+                Dock = DockStyle.Top,
+                Height = 25,
                 BackColor = Color.Transparent
             };
-            optionsPanel.Controls.Add(compLabel);
 
             compPanel = new Panel
             {
-                Location = new Point(0, 103),
-                Size = new Size(640, 150),
-                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
+                Dock = DockStyle.Fill,
                 BackColor = Surface,
                 BorderStyle = BorderStyle.FixedSingle,
                 AutoScroll = true
             };
-            optionsPanel.Controls.Add(compPanel);
 
-            // Bottom actions stay visible at the bottom of the responsive options area.
-            var actionsPanel = new Panel { Dock = DockStyle.Bottom, Height = 48, BackColor = Color.Transparent };
-            optionsPanel.Controls.Add(actionsPanel);
+            var actionsPanel = new Panel { Dock = DockStyle.Bottom, Height = 52, Padding = new Padding(0, 7, 0, 7), BackColor = Color.Transparent };
             backBtn1 = new Button
             {
                 Text = "返回",
-                Location = new Point(0, 5),
-                Size = new Size(100, 38),
+                Dock = DockStyle.Left,
+                Width = 100,
+                Margin = new Padding(0),
                 Font = MainFont,
                 ForeColor = Text2,
                 BackColor = Surface,
@@ -635,14 +727,12 @@ namespace InstallerApp
             };
             backBtn1.FlatAppearance.BorderColor = Border;
             backBtn1.Click += (s, e) => ShowWelcome();
-            actionsPanel.Controls.Add(backBtn1);
-
             startInstallBtn = new Button
             {
                 Text = "开始安装",
-                Location = new Point(520, 5),
-                Size = new Size(120, 38),
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                Dock = DockStyle.Right,
+                Width = 120,
+                Margin = new Padding(0),
                 Font = MainFont,
                 ForeColor = Color.White,
                 BackColor = Cyan,
@@ -650,9 +740,17 @@ namespace InstallerApp
                 Cursor = Cursors.Hand
             };
             startInstallBtn.Click += (s, e) => StartCustomInstall();
+            actionsPanel.Controls.Add(backBtn1);
             actionsPanel.Controls.Add(startInstallBtn);
 
-            content.Controls.Add(customPanel);
+            customOptionsPanel.Controls.Add(compPanel);
+            customOptionsPanel.Controls.Add(actionsPanel);
+            customOptionsPanel.Controls.Add(compLabel);
+            customOptionsPanel.Controls.Add(spacer);
+            customOptionsPanel.Controls.Add(pathRow);
+            customOptionsPanel.Controls.Add(installPathLabel);
+
+            pageHost.Controls.Add(customPanel);
         }
 
         void LayoutResponsiveControls()
@@ -663,19 +761,45 @@ namespace InstallerApp
             int usable = Math.Max(200, width - side * 2);
             if (welcomePanel != null)
             {
-                quickBtn.Width = usable; quickBtn.Left = side;
-                customBtn.Width = usable; customBtn.Left = side;
+                // 横向品牌Logo按容器宽度缩放，保持足够高度和清晰可辨的视觉比例。
+                int logoWidth = Math.Min(300, Math.Max(190, usable / 3));
+                int logoHeight = Math.Min(118, Math.Max(76, logoWidth * 2 / 5));
+                productLogo.Size = new Size(logoWidth, logoHeight);
+                productLogo.Location = new Point(side, 34);
+                productLabel.Location = new Point(side, 34 + logoHeight + 16);
+                versionLabel.Location = new Point(side + 2, 34 + logoHeight + 51);
+                subtitleLabel.Left = side;
+                subtitleLabel.Top = 34 + logoHeight + 92;
+                quickBtn.Width = usable; quickBtn.Left = side; quickBtn.Top = subtitleLabel.Bottom + 24;
+                customBtn.Width = usable; customBtn.Left = side; customBtn.Top = quickBtn.Bottom + 18;
             }
             if (quickPathPanel != null)
             {
-                quickPathPanel.Padding = new Padding(side, 30, side, 20);
-                quickStartBtn.Left = Math.Max(0, quickPathPanel.ClientSize.Width - side * 2 - quickStartBtn.Width);
+                quickBackBtn.Left = side;
+                quickStartBtn.Left = Math.Max(side, quickPathPanel.ClientSize.Width - side - quickStartBtn.Width);
             }
-            if (customPanel != null)
+            if (customOptionsPanel != null)
             {
-                var options = pathBox.Parent;
-                options.Padding = new Padding(side, 8, side, 10);
-                startInstallBtn.Left = Math.Max(0, options.ClientSize.Width - side * 2 - startInstallBtn.Width);
+                customHeaderPanel.Padding = new Padding(side, 20, side, 0);
+                customOptionsPanel.Padding = new Padding(side, 8, side, 10);
+                startInstallBtn.Left = Math.Max(0, customOptionsPanel.ClientSize.Width - side * 2 - startInstallBtn.Width);
+            }
+            if (installPanel != null)
+            {
+                installPanel.Padding = new Padding(side, 30, side, 20);
+            }
+            if (completePanel != null && completeContent != null)
+            {
+                // 完成页内容容器始终占满可视页面；只居中子控件，杜绝固定宽度容器裁切说明与按钮。
+                int cw = completeContent.ClientSize.Width, ch = completeContent.ClientSize.Height;
+                int groupHeight = 248;
+                int top = Math.Max(12, (ch - groupHeight) / 2);
+                completeIconPanel.Location = new Point(Math.Max(0, (cw - completeIconPanel.Width) / 2), top);
+                completeLabel.Location = new Point(0, top + 90);
+                completeLabel.Size = new Size(cw, 42);
+                completeDetail.Location = new Point(0, top + 140);
+                completeDetail.Size = new Size(cw, 28);
+                finishBtn.Location = new Point(Math.Max(0, (cw - finishBtn.Width) / 2), top + 206);
             }
         }
 
@@ -700,7 +824,7 @@ namespace InstallerApp
             {
                 var cb = new CheckBox
                 {
-                    Text = comp.name + (comp.required ? " (必选)" : ""),
+                    Text = comp.name + "  ·  " + FormatSize(comp.sizeBytes) + (comp.required ? "  (必选)" : ""),
                     Font = MainFont,
                     ForeColor = comp.required ? Cyan : Text1,
                     Location = new Point(10, y),
@@ -718,44 +842,38 @@ namespace InstallerApp
 
         void BuildInstallPanel()
         {
-            installPanel = new Panel { Dock = DockStyle.Fill, BackColor = BG, Visible = false };
+            installPanel = new Panel { Dock = DockStyle.Fill, BackColor = BG, Visible = false, Padding = new Padding(40, 30, 40, 20) };
 
             var heading = new Label
             {
                 Text = "正在安装",
                 Font = TitleFont,
                 ForeColor = Text0,
-                Location = new Point(40, 30),
-                AutoSize = true,
+                Dock = DockStyle.Top,
+                Height = 30,
                 BackColor = Color.Transparent
             };
-            installPanel.Controls.Add(heading);
-
             installStatusLabel = new Label
             {
                 Text = "准备中...",
                 Font = MainFont,
                 ForeColor = Cyan,
-                Location = new Point(40, 75),
-                AutoSize = true,
+                Dock = DockStyle.Top,
+                Height = 25,
                 BackColor = Color.Transparent
             };
-            installPanel.Controls.Add(installStatusLabel);
-
             progressBar = new ProgressBar
             {
-                Location = new Point(40, 105),
-                Size = new Size(680, 8),
+                Dock = DockStyle.Top,
+                Height = 8,
                 Style = ProgressBarStyle.Continuous,
                 ForeColor = Cyan,
-               BackColor = Surface
+                BackColor = Surface
             };
-            installPanel.Controls.Add(progressBar);
-
+            var spacer = new Panel { Dock = DockStyle.Top, Height = 10, BackColor = Color.Transparent };
             logBox = new TextBox
             {
-                Location = new Point(40, 135),
-                Size = new Size(680, 300),
+                Dock = DockStyle.Fill,
                 Font = new Font("Consolas", 8.5F),
                 ForeColor = Text2,
                 BackColor = Surface,
@@ -764,19 +882,29 @@ namespace InstallerApp
                 Multiline = true,
                 ScrollBars = ScrollBars.Vertical
             };
-            installPanel.Controls.Add(logBox);
 
-            content.Controls.Add(installPanel);
+            installPanel.Controls.Add(logBox);
+            installPanel.Controls.Add(spacer);
+            installPanel.Controls.Add(progressBar);
+            installPanel.Controls.Add(installStatusLabel);
+            installPanel.Controls.Add(heading);
+
+            pageHost.Controls.Add(installPanel);
         }
 
         void BuildCompletePanel()
         {
             completePanel = new Panel { Dock = DockStyle.Fill, BackColor = BG, Visible = false };
+            // 固定尺寸内容容器始终在父页正中，避免独立控件位置随页面布局次序偏移。
+            completeContent = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent };
+            completePanel.Controls.Add(completeContent);
+            completePanel.VisibleChanged += (s, e) => { if (completePanel.Visible) BeginInvoke((Action)LayoutResponsiveControls); };
+            completePanel.SizeChanged += (s, e) => LayoutResponsiveControls();
 
             completeIconPanel = new Panel
             {
                 Size = new Size(72, 72),
-                Location = new Point(344, 80),
+                Location = new Point(224, 0),
                 BackColor = Color.Transparent
             };
             completeIconPanel.Paint += (s, e) =>
@@ -802,36 +930,36 @@ namespace InstallerApp
                     }
                 }
             };
-            completePanel.Controls.Add(completeIconPanel);
+            completeContent.Controls.Add(completeIconPanel);
 
             completeLabel = new Label
             {
                 Text = "安装完成",
                 Font = BigFont,
                 ForeColor = Text0,
-                Location = new Point(0, 170),
-                Size = new Size(760, 36),
+                Location = new Point(0, 90),
+                Size = new Size(520, 42),
                 TextAlign = ContentAlignment.MiddleCenter,
                 BackColor = Color.Transparent
             };
-            completePanel.Controls.Add(completeLabel);
+            completeContent.Controls.Add(completeLabel);
 
             completeDetail = new Label
             {
                 Text = productName + " 已成功安装到您的计算机。",
                 Font = MainFont,
                 ForeColor = Text2,
-                Location = new Point(0, 215),
-                Size = new Size(760, 24),
+                Location = new Point(0, 140),
+                Size = new Size(520, 28),
                 TextAlign = ContentAlignment.MiddleCenter,
                 BackColor = Color.Transparent
             };
-            completePanel.Controls.Add(completeDetail);
+            completeContent.Controls.Add(completeDetail);
 
             finishBtn = new Button
             {
                 Text = "完成",
-                Location = new Point(310, 300),
+                Location = new Point(190, 206),
                 Size = new Size(140, 42),
                 Font = MainFont,
                 ForeColor = Color.White,
@@ -840,9 +968,9 @@ namespace InstallerApp
                 Cursor = Cursors.Hand
             };
             finishBtn.Click += (s, e) => Close();
-            completePanel.Controls.Add(finishBtn);
+            completeContent.Controls.Add(finishBtn);
 
-            content.Controls.Add(completePanel);
+            pageHost.Controls.Add(completePanel);
         }
 
         void ShowWelcome()
@@ -900,8 +1028,27 @@ namespace InstallerApp
             BeginInstall();
         }
 
+        bool IsSafeInstallDirectory(string path, out string error)
+        {
+            error = "";
+            if (string.IsNullOrWhiteSpace(path)) { error = "安装目录不能为空。"; return false; }
+            try
+            {
+                string full = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                string root = Path.GetPathRoot(full).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (string.Equals(full, root, StringComparison.OrdinalIgnoreCase)) { error = "不能将磁盘根目录设为安装目录。请选择专用的子文件夹。"; return false; }
+                if (full.Length < root.Length + 4) { error = "安装目录层级过浅。请选择专用的产品子文件夹。"; return false; }
+                return true;
+            }
+            catch { error = "安装目录无效。"; return false; }
+        }
+
         void BeginInstall()
         {
+            string installError;
+            if (!IsSafeInstallDirectory(selectedPath, out installError)) { MessageBox.Show(installError, "安装路径不安全", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+            string foreignOwner;
+            if (IsForeignProductDirectory(selectedPath, out foreignOwner)) { MessageBox.Show("该安装目录已属于“" + foreignOwner + "”。为防止不同产品互相覆盖，请选择其他专属目录。", "安装目录冲突", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
             screen = 2;
             welcomePanel.Visible = false;
             quickPathPanel.Visible = false;
@@ -919,9 +1066,15 @@ namespace InstallerApp
             worker.RunWorkerAsync();
         }
 
+        public static string FileSha256(string path)
+        {
+            using (var sha = SHA256.Create()) using (var stream = File.OpenRead(path))
+            { byte[] hash = sha.ComputeHash(stream); var text = new System.Text.StringBuilder(hash.Length * 2); for (int i = 0; i < hash.Length; i++) text.Append(hash[i].ToString("x2")); return text.ToString(); }
+        }
         void Worker_DoWork(object sender, DoWorkEventArgs e)
         {
             var w = (BackgroundWorker)sender;
+            var installedFiles = new List<OwnedFile>();
             try
             {
                 w.ReportProgress(5, "正在安装到: " + selectedPath);
@@ -943,6 +1096,7 @@ namespace InstallerApp
                         string dd = Path.GetDirectoryName(dest);
                         if (!Directory.Exists(dd)) Directory.CreateDirectory(dd);
                         File.Copy(files[i], dest, true);
+                        installedFiles.Add(new OwnedFile { relativePath = rel.Replace('\\', '/'), sha256 = FileSha256(dest) });
                         int p = 10 + (int)((float)(i + 1) / total * 50);
                         w.ReportProgress(p, "已复制 " + (i + 1) + " / " + files.Length + " 个文件");
                     }
@@ -963,6 +1117,7 @@ namespace InstallerApp
                     string lnk = Path.Combine(dir, productName + ".lnk");
                     object sc = shellType.InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, shell, new object[] { lnk });
                     sc.GetType().InvokeMember("TargetPath", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { exeTarget });
+                    sc.GetType().InvokeMember("Arguments", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { startMenuArgs });
                     sc.GetType().InvokeMember("WorkingDirectory", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { selectedPath });
                     sc.GetType().InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod, null, sc, null);
                     w.ReportProgress(70, "创建开始菜单快捷方式");
@@ -972,6 +1127,7 @@ namespace InstallerApp
                     string lnk = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), productName + ".lnk");
                     object sc = shellType.InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, shell, new object[] { lnk });
                     sc.GetType().InvokeMember("TargetPath", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { exeTarget });
+                    sc.GetType().InvokeMember("Arguments", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { desktopArgs });
                     sc.GetType().InvokeMember("WorkingDirectory", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { selectedPath });
                     sc.GetType().InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod, null, sc, null);
                     w.ReportProgress(72, "创建桌面快捷方式");
@@ -998,8 +1154,8 @@ namespace InstallerApp
                     w.ReportProgress(76, added ? "已加入系统 Path: " + systemPathEntry : "系统 Path 已存在相同项，未重复添加");
                 }
 
-                WriteUninstallManifest(exeTarget, systemPathEntry);
-                w.ReportProgress(77, "写入卸载清理信息");
+                WriteUninstallManifest(exeTarget, systemPathEntry, installedFiles);
+                w.ReportProgress(77, "写入可验证的卸载文件清单");
 
                 // Download selected external resources to validated paths below the install directory.
                 var toDownload = new List<CompInfo>();
@@ -1141,30 +1297,67 @@ namespace InstallerApp
             }
         }
 
-        void WriteUninstallManifest(string exeTarget, string systemPathEntry)
+        string ProductRegistryKey()
         {
+            Guid parsed; if (!Guid.TryParse(productId, out parsed)) throw new InvalidOperationException("产品唯一 ID 无效，无法安全写入卸载信息。");
+            return parsed.ToString("D").ToUpperInvariant();
+        }
+        void WriteUninstallManifest(string exeTarget, string systemPathEntry, List<OwnedFile> installedFiles)
+        {
+            // Manifest记录每一个可验证的产品文件，卸载时只清理哈希仍匹配的文件，绝不按目录递归删除。
             string uninstallExe = Path.Combine(selectedPath, productName + "-uninstall.exe");
+            string startMenuDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), productName);
+            string startupKey = string.IsNullOrEmpty(startupName) ? productName : startupName;
             File.Copy(Application.ExecutablePath, uninstallExe, true);
+            installedFiles.Add(new OwnedFile { relativePath = Path.GetFileName(uninstallExe), sha256 = FileSha256(uninstallExe) });
             var manifest = new Dictionary<string, object>();
+            manifest["schemaVersion"] = 3;
+            manifest["productId"] = ProductRegistryKey();
             manifest["productName"] = productName;
             manifest["installPath"] = selectedPath;
+            // 卸载器、清单本身和可选的产品图标也属于本安装器拥有的文件。
+            string iconFile = "";
+            if (!string.IsNullOrWhiteSpace(controlPanelIcon) && !Path.IsPathRooted(controlPanelIcon)) { string candidate = Path.Combine(selectedPath, controlPanelIcon); if (File.Exists(candidate)) iconFile = candidate; }
+            manifest["uninstallExe"] = uninstallExe;
+            manifest["mainExeTarget"] = exeTarget;
+            manifest["controlPanelIcon"] = iconFile;
+            manifest["ownedFiles"] = installedFiles;
             manifest["desktopShortcut"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), productName + ".lnk");
-            manifest["startMenuDirectory"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), productName);
-            manifest["startupEntryName"] = string.IsNullOrEmpty(startupName) ? productName : startupName;
+            manifest["desktopArguments"] = desktopArgs;
+            manifest["startMenuShortcut"] = Path.Combine(startMenuDir, productName + ".lnk");
+            manifest["startMenuArguments"] = startMenuArgs;
+            manifest["startMenuDirectory"] = startMenuDir;
+            manifest["startupEntryName"] = startupKey;
+            manifest["startupEntryValue"] = "\"" + exeTarget + "\"" + (string.IsNullOrEmpty(startupArgs) ? "" : " " + startupArgs);
             manifest["systemPathEntry"] = systemPathEntry;
             manifest["cleanupDesktopShortcut"] = cleanupDesktop;
             manifest["cleanupStartMenuShortcut"] = cleanupStartMenu;
             manifest["cleanupStartupEntry"] = cleanupStartup;
-            manifest["cleanupInstallDirectory"] = cleanupInstallDir;
+            manifest["cleanupInstallDirectory"] = false;
             File.WriteAllText(Path.Combine(selectedPath, ".installer-uninstall.json"), new JavaScriptSerializer().Serialize(manifest));
-            RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + productName);
+            RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + ProductRegistryKey());
             key.SetValue("DisplayName", productName);
             key.SetValue("DisplayVersion", version);
             key.SetValue("UninstallString", "\"" + uninstallExe + "\" --uninstall");
             key.SetValue("InstallLocation", selectedPath);
+            if (!string.IsNullOrEmpty(iconFile)) key.SetValue("DisplayIcon", "\"" + iconFile + "\",0");
+            key.SetValue("NoModify", 1, RegistryValueKind.DWord);
+            key.SetValue("NoRepair", 1, RegistryValueKind.DWord);
             key.Close();
         }
 
+        public void ShowCompletePreview()
+        {
+            installSucceeded = true;
+            welcomePanel.Visible = false; quickPathPanel.Visible = false; customPanel.Visible = false; installPanel.Visible = false;
+            completePanel.Visible = true;
+            completeLabel.Text = "安装完成";
+            completeLabel.ForeColor = Text0;
+            completeDetail.Text = productName + " 已成功安装到您的计算机。";
+            completePanel.PerformLayout();
+            LayoutResponsiveControls();
+            completeIconPanel.Invalidate();
+        }
         void Worker_ProgressChanged(object sender, ProgressChangedEventArgs e)
         {
             progressBar.Value = Math.Min(100, e.ProgressPercentage);
@@ -1199,6 +1392,7 @@ namespace InstallerApp
                 completeDetail.Text = productName + " 已成功安装到您的计算机。";
             }
             completeIconPanel.Invalidate();
+            BeginInvoke((Action)LayoutResponsiveControls);
         }
 
         GraphicsPath RoundRect(Rectangle r, int radius)
@@ -1225,6 +1419,15 @@ namespace InstallerApp
     {
         static string Str(Dictionary<string, object> d, string key) { return d.ContainsKey(key) && d[key] != null ? d[key].ToString() : ""; }
         static bool Bool(Dictionary<string, object> d, string key) { return d.ContainsKey(key) && d[key] is bool && (bool)d[key]; }
+        static bool IsDirectChild(string path, string directory, string extension)
+        {
+            try { return !string.IsNullOrWhiteSpace(path) && !string.IsNullOrWhiteSpace(directory) && string.Equals(Path.GetDirectoryName(Path.GetFullPath(path)), Path.GetFullPath(directory).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase) && string.Equals(Path.GetExtension(path), extension, StringComparison.OrdinalIgnoreCase); } catch { return false; }
+        }
+        static bool IsOwnedShortcut(string path, string expectedTarget, string expectedArguments)
+        {
+            if (!File.Exists(path)) return false;
+            try { Type shellType = Type.GetTypeFromProgID("WScript.Shell"); object shell = Activator.CreateInstance(shellType); object sc = shellType.InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, shell, new object[] { path }); string target = Convert.ToString(sc.GetType().InvokeMember("TargetPath", System.Reflection.BindingFlags.GetProperty, null, sc, null)); string args = Convert.ToString(sc.GetType().InvokeMember("Arguments", System.Reflection.BindingFlags.GetProperty, null, sc, null)); return string.Equals(Path.GetFullPath(target), Path.GetFullPath(expectedTarget), StringComparison.OrdinalIgnoreCase) && string.Equals(args ?? "", expectedArguments ?? "", StringComparison.Ordinal); } catch { return false; }
+        }
         static bool IsAdministrator()
         {
             using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
@@ -1232,7 +1435,51 @@ namespace InstallerApp
                 return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
             }
         }
-
+        static bool IsSafeOwnedPath(string installPath, string relativePath, out string fullPath)
+        {
+            fullPath = "";
+            try { if (string.IsNullOrWhiteSpace(relativePath) || Path.IsPathRooted(relativePath)) return false; string root=Path.GetFullPath(installPath).TrimEnd('\\')+"\\"; fullPath=Path.GetFullPath(Path.Combine(root,relativePath)); return fullPath.StartsWith(root,StringComparison.OrdinalIgnoreCase); } catch { return false; }
+        }
+        static void DeleteOwnedFiles(Dictionary<string, object> cfg, string installPath, string manifestPath)
+        {
+            ArrayList files = cfg.ContainsKey("ownedFiles") ? cfg["ownedFiles"] as ArrayList : null;
+            if (files != null) foreach (object item in files)
+            {
+                var f=item as Dictionary<string, object>; if(f==null) continue; string path;
+                if(!IsSafeOwnedPath(installPath,Str(f,"relativePath"),out path) || !File.Exists(path)) continue;
+                string expected=Str(f,"sha256"); if(string.IsNullOrWhiteSpace(expected)) continue;
+                try { if(string.Equals(InstallerForm.FileSha256(path),expected,StringComparison.OrdinalIgnoreCase) && !string.Equals(Path.GetFullPath(path),Path.GetFullPath(Application.ExecutablePath),StringComparison.OrdinalIgnoreCase)) File.Delete(path); } catch { }
+            }
+            // 清单本身位于安装根目录且仅在已完成逐项文件校验后删除。
+            try { if (File.Exists(manifestPath)) File.Delete(manifestPath); } catch { }
+            // 仅移除自底向上已经为空的目录；不递归，不删除任何仍含文件的目录。
+            try { foreach(string dir in Directory.GetDirectories(installPath,"*",SearchOption.AllDirectories).OrderByDescending(x=>x.Length)) { try { if(Directory.GetFileSystemEntries(dir).Length==0) Directory.Delete(dir,false); } catch { } } } catch { }
+        }
+        static void StartVerifiedCleanupHelper(string uninstallExe, string installPath)
+        {
+            // 由临时目录中的独立副本收尾，避免卸载程序自删触发“程序兼容性助手”。
+            try
+            {
+                string helper = Path.Combine(Path.GetTempPath(), "installer-cleanup-" + Guid.NewGuid().ToString("N") + ".exe");
+                File.Copy(Application.ExecutablePath, helper, true);
+                Process.Start(new ProcessStartInfo(helper, "--cleanup \"" + uninstallExe + "\" \"" + installPath + "\" " + Process.GetCurrentProcess().Id) { CreateNoWindow = true, UseShellExecute = false });
+            }
+            catch { }
+        }
+        public static void RunCleanupHelper(string uninstallExe, string installPath, string pidText)
+        {
+            try
+            {
+                int pid; if (!int.TryParse(pidText, out pid)) return;
+                try { Process.GetProcessById(pid).WaitForExit(15000); } catch { }
+                string fullRoot = Path.GetFullPath(installPath).TrimEnd('\\') + "\\";
+                string fullUninstall = Path.GetFullPath(uninstallExe);
+                if (!fullUninstall.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase)) return;
+                try { if (File.Exists(fullUninstall)) File.Delete(fullUninstall); } catch { }
+                try { if (Directory.Exists(installPath) && Directory.GetFileSystemEntries(installPath).Length == 0) Directory.Delete(installPath, false); } catch { }
+            }
+            catch { }
+        }
         public static void Uninstall(string uninstallExe)
         {
             string installDir = Path.GetDirectoryName(uninstallExe);
@@ -1248,17 +1495,20 @@ namespace InstallerApp
                     return;
                 }
                 var cfg = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(manifestPath));
-                string product = Str(cfg, "productName");
-                if (MessageBox.Show("确定要卸载 " + product + " 吗？", "卸载确认", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-                if (Bool(cfg, "cleanupDesktopShortcut")) { string p = Str(cfg, "desktopShortcut"); if (File.Exists(p)) File.Delete(p); }
-                if (Bool(cfg, "cleanupStartMenuShortcut")) { string p = Str(cfg, "startMenuDirectory"); if (Directory.Exists(p)) Directory.Delete(p, true); }
-                if (Bool(cfg, "cleanupStartupEntry")) Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run").DeleteValue(Str(cfg, "startupEntryName"), false);
-                string systemPathEntry = Str(cfg, "systemPathEntry");
-                if (!string.IsNullOrEmpty(systemPathEntry)) SystemPath.Remove(systemPathEntry);
-                Registry.CurrentUser.DeleteSubKeyTree(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + product, false);
-                bool removeDir = Bool(cfg, "cleanupInstallDirectory");
-                MessageBox.Show(removeDir ? "卸载清理已完成，安装目录将在关闭后删除。" : "卸载清理已完成，安装目录已保留。", "卸载完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                if (removeDir) { Process.Start(new ProcessStartInfo("cmd.exe", "/c ping 127.0.0.1 -n 3 > nul & rmdir /s /q \"" + installDir + "\"") { CreateNoWindow = true, UseShellExecute = false }); }
+                string product = Str(cfg, "productName"), installPath = Str(cfg, "installPath"), productId = Str(cfg, "productId"), mainTarget = Str(cfg, "mainExeTarget");
+                Guid parsed; if (!Guid.TryParse(productId, out parsed)) throw new InvalidDataException("卸载配置缺少有效的产品唯一 ID，已拒绝执行清理。");
+                if (!string.Equals(Path.GetFullPath(installDir).TrimEnd('\\'), Path.GetFullPath(installPath).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("卸载程序路径与安装记录不一致，已拒绝执行清理。");
+                if (MessageBox.Show("确定要卸载 " + product + " 吗？\r\n\r\n将仅删除安装清单中哈希仍匹配的产品文件，并撤销经归属校验的快捷方式、启动项、Path 条目和本产品卸载记录。\r\n任何被修改的文件、未知文件及非空目录都将保留。", "卸载确认", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+                string desktopDir = Environment.GetFolderPath(Environment.SpecialFolder.Desktop), programsDir = Environment.GetFolderPath(Environment.SpecialFolder.Programs), startMenuDir = Path.Combine(programsDir, product);
+                if (Bool(cfg, "cleanupDesktopShortcut")) { string p = Str(cfg, "desktopShortcut"); if (IsDirectChild(p, desktopDir, ".lnk") && IsOwnedShortcut(p, mainTarget, Str(cfg,"desktopArguments"))) File.Delete(p); }
+                if (Bool(cfg, "cleanupStartMenuShortcut")) { string p = Str(cfg, "startMenuShortcut"); if (IsDirectChild(p, startMenuDir, ".lnk") && IsOwnedShortcut(p, mainTarget, Str(cfg,"startMenuArguments"))) File.Delete(p); }
+                if (Bool(cfg, "cleanupStartupEntry")) { string n=Str(cfg,"startupEntryName"), expected=Str(cfg,"startupEntryValue"); using(RegistryKey run=Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run",true)) { if(run!=null && string.Equals(Convert.ToString(run.GetValue(n,"")),expected,StringComparison.Ordinal)) run.DeleteValue(n,false); } }
+                string systemPathEntry = Str(cfg, "systemPathEntry"); if (!string.IsNullOrEmpty(systemPathEntry) && Path.GetFullPath(systemPathEntry).StartsWith(Path.GetFullPath(installPath).TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase)) SystemPath.Remove(systemPathEntry);
+                DeleteOwnedFiles(cfg, installPath, manifestPath);
+                Registry.CurrentUser.DeleteSubKeyTree(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + parsed.ToString("D").ToUpperInvariant(), false);
+                MessageBox.Show("卸载完成。", "卸载完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                // 用户关闭提示后由临时清理助手处理卸载器自身与已空目录。
+                StartVerifiedCleanupHelper(uninstallExe, installPath);
             }
             catch (Exception ex) { MessageBox.Show("卸载失败: " + ex.Message, "卸载错误", MessageBoxButtons.OK, MessageBoxIcon.Error); }
         }
@@ -1270,6 +1520,7 @@ namespace InstallerApp
         public string downloadUrl;
         public string extractPath;
         public string sha256;
+        public long sizeBytes;
         public bool required;
     }
 
