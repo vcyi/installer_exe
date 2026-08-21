@@ -5,6 +5,10 @@ installer_exe/build-status.json
 installer_exe/_build_*/
 installer_exe/installer-studio-native.exe
 
+# Installer backups
+*.previous
+*.previous.*
+
 # Test output
 installer_exe/智慧教学系统-Setup-*.exe
 

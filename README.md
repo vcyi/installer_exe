@@ -27,7 +27,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\installer-studio-native.ps
 | 系统 Path | `addToSystemPath` 开关与 `systemPathValue`（制作台“Path 路径”，默认 `{app}`）。开启后仅将解析值写入 HKLM 的系统 `Path`，需要管理员权限；`{app}` 会替换为实际安装目录。 |
 | 快捷方式 | 是否创建桌面快捷方式、开始菜单快捷方式 |
 | 启动项 | 是否写入当前用户启动项、启动项名称、启动参数 |
-| 外部资源 | 资源名称、下载 URL、是否必选、解压路径、哈希值 |
+| 外部资源 | 资源名称、下载 URL、是否必选、解压路径 |
 | 卸载清理 | 是否删除桌面快捷方式、开始菜单、启动项和整个安装目录 |
 
 “安装准备界面 Logo”对应配置字段 `prepLogoPath`，支持 PNG、JPG/JPEG、BMP；建议使用正方形透明 PNG。构建时该文件会复制到独立临时目录并作为 `preparation-logo` 嵌入最终启动器；未配置时会继续显示默认图形。
@@ -51,9 +51,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\installer-studio-native.ps
 
 ## 外部资源说明
 
-每项资源均可配置名称、下载 URL、是否必选、`extractPath` 和可选 `sha256`。基础安装不下载资源；自定义安装时，必选资源会自动选中，可选资源由最终用户勾选。
+每项资源均可配置名称、下载 URL、是否必选和 `extractPath`。基础安装不下载资源；自定义安装时，必选资源会自动选中，可选资源由最终用户勾选。
 
-`extractPath` 必须是相对安装目录的路径：安装器拒绝绝对/rooted 路径及包含 `..` 后逃逸安装目录的路径。下载后的 ZIP 会在目标目录中安全解压，并检查压缩包条目不能越界；非 ZIP 文件将原样保留在该目标目录。配置 `sha256` 时，会在下载完成后进行 SHA-256 校验，校验失败会删除下载文件并终止安装。
+`extractPath` 必须是相对安装目录的路径：安装器拒绝绝对/rooted 路径及包含 `..` 后逃逸安装目录的路径。下载后的 ZIP 会在目标目录中安全解压，并检查压缩包条目不能越界；非 ZIP 文件将原样保留在该目标目录。
 
 ## 构建架构
 

@@ -1,12 +1,16 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Linq;
+using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Web;
 using System.Windows.Forms;
 using System.Web.Script.Serialization;
 
@@ -17,14 +21,17 @@ public class InstallerStudioNative : Form
     // Apple-inspired light system: frosted white layers, soft blue accent and low-contrast separation.
     readonly Color Canvas = Color.FromArgb(242, 244, 250), Surface = Color.FromArgb(250, 251, 255), Card = Color.FromArgb(255, 255, 255);
     readonly Color Field = Color.FromArgb(246, 248, 253), Line = Color.FromArgb(222, 227, 238), Cyan = Color.FromArgb(10, 132, 255), TextMain = Color.FromArgb(28, 28, 30), TextMuted = Color.FromArgb(110, 110, 115);
-    TextBox productName, productId, version, publisher, subtitle, sourceDir, outputDir, installPath, mainExe, iconPath, prepLogoPath, systemPathValue, startupName, startupArgs, desktopArgs, startMenuArgs, scanResult;
-    CheckBox customInstall, allowInstallPathSelection, addToSystemPath, desktop, startMenu, startup, cleanDesktop, cleanStartMenu, cleanStartup, cleanInstallDir;
+    TextBox productName, productId, version, publisher, subtitle, sourceDir, outputDir, installPath, mainExe, iconPath, prepLogoPath, runtimePathEntriesValue, startupName, startupArgs, desktopArgs, startMenuArgs, componentTitle, scanResult;
+    CheckBox allowInstallDirSelection, desktop, startMenu, startup, cleanDesktop, cleanStartMenu, cleanStartup, cleanInstallDir;
     ComboBox profileList;
     string activeProfilePath;
-    ComboBox theme;
     DataGridView resources;
+    Button completeResourceButton;
+    Label resourceProgress;
     RichTextBox logBox;
     ProgressBar progress;
+    ComboBox buildLogRefreshPercent;
+    string lastStatusSnapshot = null;
     Label buildState, outputLabel, headerPage, headerHint;
     Timer statusTimer;
     Timer saveTimer;
@@ -215,20 +222,88 @@ public class InstallerStudioNative : Form
     }
     void BuildBehaviorPage()
     {
-        TabPage behavior = NewPage("安装行为"); pageTabs.TabPages.Add(behavior); CardPanel card = PageCard(behavior, "学习终端部署策略", "控制快捷入口、启动任务、系统 Path 和卸载清理规则"); TableLayoutPanel bp = FormTable(); AddCardContent(card, bp);
-        customInstall = Check("允许用户自定义安装（路径与可选组件）", true); allowInstallPathSelection = Check("允许基础/快速安装用户选择路径", false); addToSystemPath = Check("将指定路径加入系统 Path（HKLM，需要管理员权限）", false); systemPathValue = TextField("{app}"); desktop = Check("创建桌面快捷方式", true); desktopArgs = TextField(""); startMenu = Check("创建开始菜单快捷方式", true); startMenuArgs = TextField(""); startup = Check("创建当前用户启动项", false); startupName = TextField(""); startupArgs = TextField(""); cleanDesktop = Check("卸载时删除桌面快捷方式", true); cleanStartMenu = Check("卸载时删除开始菜单快捷方式", true); cleanStartup = Check("卸载时删除启动项", true); cleanInstallDir = Check("卸载时删除安装目录（已禁用）", false); cleanInstallDir.Enabled = false;
-        theme = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill, BackColor = Field, ForeColor = TextMain, FlatStyle = FlatStyle.Flat }; theme.Items.AddRange(new object[] { "dark", "light" }); theme.SelectedIndex = 1;
-        AddRow(bp, 0, "安装模式", customInstall); AddRow(bp, 1, "基础安装路径", allowInstallPathSelection); AddRow(bp, 2, "系统 Path", addToSystemPath); AddRow(bp, 3, "Path 路径", systemPathValue); AddRow(bp, 4, "桌面快捷方式", desktop); AddRow(bp, 5, "桌面启动参数", desktopArgs); AddRow(bp, 6, "开始菜单", startMenu); AddRow(bp, 7, "开始菜单参数", startMenuArgs); AddRow(bp, 8, "启动项", startup); AddRow(bp, 9, "启动项名称", startupName); AddRow(bp, 10, "启动项参数", startupArgs); AddRow(bp, 11, "卸载清理", cleanDesktop); AddRow(bp, 12, "", cleanStartMenu); AddRow(bp, 13, "", cleanStartup); AddRow(bp, 14, "", cleanInstallDir); AddRow(bp, 15, "安装界面主题", theme);
+        TabPage behavior = NewPage("安装行为"); pageTabs.TabPages.Add(behavior); CardPanel card = PageCard(behavior, "学习终端部署策略", "控制安装目录、产品私有运行时目录、快捷入口和卸载清理规则"); TableLayoutPanel bp = FormTable(); AddCardContent(card, bp);
+        allowInstallDirSelection = Check("允许用户选择安装目录", true); runtimePathEntriesValue = TextField(""); desktop = Check("创建桌面快捷方式", true); desktopArgs = TextField(""); startMenu = Check("创建开始菜单快捷方式", true); startMenuArgs = TextField(""); startup = Check("创建当前用户启动项", false); startupName = TextField(""); startupArgs = TextField(""); cleanDesktop = Check("卸载时删除桌面快捷方式", true); cleanStartMenu = Check("卸载时删除开始菜单快捷方式", true); cleanStartup = Check("卸载时删除启动项", true); cleanInstallDir = Check("卸载时删除安装目录（已禁用）", false); cleanInstallDir.Enabled = false;
+        runtimePathEntriesValue.Validated += delegate { NormalizeRuntimePathEntriesField(true); };
+        AddRow(bp, 0, "安装目录", allowInstallDirSelection); AddRow(bp, 1, "运行时依赖目录", runtimePathEntriesValue); AddRow(bp, 2, "目录格式", LabelText("以分号分隔；编辑结束、加载和保存时会自动规范：相对路径会变为 {app}\\相对路径，{app} 保持不变。例如 {app}\\bin。拒绝绝对路径、.、..、空路径段和错误 token；启动器仅注入进程级 PATH，不会写入系统或用户 PATH。", 8.5F, TextMuted)); AddRow(bp, 3, "桌面快捷方式", desktop); AddRow(bp, 4, "桌面启动参数", desktopArgs); AddRow(bp, 5, "开始菜单", startMenu); AddRow(bp, 6, "开始菜单参数", startMenuArgs); AddRow(bp, 7, "启动项", startup); AddRow(bp, 8, "启动项名称", startupName); AddRow(bp, 9, "启动项参数", startupArgs); AddRow(bp, 10, "卸载清理", cleanDesktop); AddRow(bp, 11, "", cleanStartMenu); AddRow(bp, 12, "", cleanStartup); AddRow(bp, 13, "", cleanInstallDir);
     }
     CheckBox Check(string text, bool value) { return new CheckBox { Text = text, Checked = value, AutoSize = true, ForeColor = TextMain, BackColor = Card, FlatStyle = FlatStyle.Flat }; }
     void BuildResourcesPage()
     {
         TabPage external = NewPage("外部资源"); pageTabs.TabPages.Add(external); CardPanel card = new CardPanel { Dock = DockStyle.Fill, BackColor = Card, Padding = new Padding(20) }; external.Controls.Add(card);
         resources = new DataGridView { Dock = DockStyle.Fill, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, AllowUserToAddRows = true, AllowUserToDeleteRows = true, BackgroundColor = Field, BorderStyle = BorderStyle.None, GridColor = Line, EnableHeadersVisualStyles = false, ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle { BackColor = Color.FromArgb(237, 246, 245), ForeColor = Cyan, SelectionBackColor = Color.FromArgb(237, 246, 245), Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold) }, DefaultCellStyle = new DataGridViewCellStyle { BackColor = Field, ForeColor = TextMain, SelectionBackColor = Color.FromArgb(218, 241, 238), SelectionForeColor = TextMain }, RowHeadersVisible = false };
-        resources.Columns.Add("name", "名称"); resources.Columns.Add("downloadUrl", "下载 URL"); resources.Columns.Add("extractPath", "目标相对路径"); resources.Columns.Add(new DataGridViewCheckBoxColumn { Name = "required", HeaderText = "必选" }); resources.Columns.Add("sha256", "SHA-256（可选）");
-        Label cap = LabelText("登记安装时需要下载或解压的教学内容资源", 8.5F, TextMuted); cap.Dock = DockStyle.Top; cap.Padding = new Padding(0, 0, 0, 12);
+        componentTitle = TextField("");
+        resources.Columns.Add(new DataGridViewCheckBoxColumn { Name = "enabled", HeaderText = "启用" }); resources.Columns.Add("name", "名称"); resources.Columns.Add("type", "类型（file/zip/rar/tar.gz）"); resources.Columns.Add("downloadUrl", "下载 URL"); resources.Columns.Add("savePath", "保存相对路径（含文件名）"); resources.Columns.Add(new DataGridViewCheckBoxColumn { Name = "required", HeaderText = "必选" });
+        resources.CellEndEdit += delegate(object sender, DataGridViewCellEventArgs e) { if (e.RowIndex >= 0 && e.ColumnIndex == resources.Columns["savePath"].Index) CompleteResourceSavePath(resources.Rows[e.RowIndex]); };
+        Label rule = LabelText("组件安全规则：仅启用受控来源的 file、zip、rar 或 tar.gz 资源；下载 URL 必须为 HTTPS，且不同组件不得重复使用同一 URL。savePath 编辑结束及保存配置时，会按 HTTPS URL 解码的文件名自动补全：空值为 resources\\文件名，目录末尾会追加文件名。禁止绝对路径、.、.. 与空路径段；所有格式只原样保存，绝不解压或执行。", 9F, Color.FromArgb(170, 70, 0)); rule.Dock = DockStyle.Top; rule.AutoSize = false; rule.Height = 78; rule.Padding = new Padding(10, 8, 10, 8); rule.BackColor = Color.FromArgb(255, 246, 225);
+        Panel titlePanel = new Panel { Dock = DockStyle.Top, Height = 58, BackColor = Card }; Label titleLabel = LabelText("组件标题", 9F, TextMuted); titleLabel.Location = new Point(0, 8); titlePanel.Controls.Add(titleLabel); componentTitle.Location = new Point(82, 4); componentTitle.Size = new Size(420, 27); componentTitle.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top; titlePanel.Controls.Add(componentTitle); Label titleHint = LabelText("显示在已启用组件列表上方；留空则隐藏。支持多行。", 8F, TextMuted); titleHint.Location = new Point(82, 34); titlePanel.Controls.Add(titleHint);
+        Label cap = LabelText("登记安装时需要下载并原样保存的教学内容资源", 8.5F, TextMuted); cap.Dock = DockStyle.Top; cap.Padding = new Padding(0, 0, 0, 12);
         Label head = LabelText("课程资源与可选组件", 12F, TextMain); head.Font = new Font("Microsoft YaHei UI", 12F, FontStyle.Bold); head.Dock = DockStyle.Top; head.Padding = new Padding(0, 0, 0, 5);
-        card.Controls.Add(resources); card.Controls.Add(cap); card.Controls.Add(head);
+        Panel actions = new Panel { Dock = DockStyle.Top, Height = 42, BackColor = Card };
+        completeResourceButton = ActionButton("自动补全资源信息", true); completeResourceButton.Location = new Point(0, 2); completeResourceButton.Click += delegate { CompleteSelectedResource(); }; actions.Controls.Add(completeResourceButton);
+        resourceProgress = LabelText("请选择一条资源记录后自动补全。", 8.5F, TextMuted); resourceProgress.AutoSize = false; resourceProgress.TextAlign = ContentAlignment.MiddleLeft; resourceProgress.Location = new Point(170, 5); resourceProgress.Size = new Size(500, 30); actions.Controls.Add(resourceProgress);
+        card.Controls.Add(resources); card.Controls.Add(actions); card.Controls.Add(rule); card.Controls.Add(titlePanel); card.Controls.Add(cap); card.Controls.Add(head);
+    }
+    string SafeFileNameFromUrl(string value)
+    {
+        Uri uri; if (!Uri.TryCreate((value ?? "").Trim(), UriKind.Absolute, out uri) || !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("下载 URL 必须是合法的 HTTPS 地址。");
+        string segment = uri.AbsolutePath.Substring(uri.AbsolutePath.LastIndexOf('/') + 1); string name;
+        try { name = Uri.UnescapeDataString(segment); } catch { throw new InvalidDataException("下载 URL 中的文件名编码无效。"); }
+        if (string.IsNullOrWhiteSpace(name) || name == "." || name == ".." || name.IndexOfAny(new char[] { '\\', '/', '\0' }) >= 0) throw new InvalidDataException("下载 URL 不含安全文件名。");
+        foreach (char c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
+        name = name.Trim().Trim('.'); if (name.Length == 0 || name.Length > 180) throw new InvalidDataException("下载 URL 中的文件名不安全或过长。");
+        return name;
+    }
+    string ResourceTypeForFileName(string fileName)
+    {
+        string lower = fileName.ToLowerInvariant(); if (lower.EndsWith(".tar.gz")) return "tar.gz"; if (lower.EndsWith(".zip")) return "zip"; if (lower.EndsWith(".rar")) return "rar"; return "file";
+    }
+    bool IsSafeRelativePathForCompletion(string value)
+    {
+        string path = (value ?? "").Trim().Replace('/', '\\');
+        if (path.Length == 0) return true;
+        if (Path.IsPathRooted(path) || path.StartsWith("\\")) return false;
+        string[] parts = path.TrimEnd('\\').Split('\\');
+        return parts.Length > 0 && !parts.Any(part => string.IsNullOrWhiteSpace(part) || part == "." || part == "..");
+    }
+    bool HasUnambiguousResourceFileName(string path)
+    {
+        string last = path.TrimEnd('\\', '/'); last = last.Substring(last.LastIndexOfAny(new char[] { '\\', '/' }) + 1);
+        return last.Length > 0 && Path.GetExtension(last).Length > 0;
+    }
+    void CompleteResourceSavePath(DataGridViewRow row)
+    {
+        if (row == null || row.IsNewRow) return;
+        string original = Convert.ToString(row.Cells["savePath"].Value ?? "").Trim();
+        if (!IsSafeRelativePathForCompletion(original)) return;
+        string fileName;
+        try { fileName = SafeFileNameFromUrl(Convert.ToString(row.Cells["downloadUrl"].Value ?? "")); }
+        catch { return; }
+        string path = original.Replace('/', '\\');
+        if (path.Length == 0) path = "resources\\" + fileName;
+        else if (path.EndsWith("\\")) path += fileName;
+        else if (!HasUnambiguousResourceFileName(path)) path += "\\" + fileName;
+        if (!string.Equals(Convert.ToString(row.Cells["savePath"].Value ?? ""), path, StringComparison.Ordinal)) row.Cells["savePath"].Value = path;
+    }
+    void CompleteAllResourceSavePaths()
+    {
+        if (resources == null) return;
+        foreach (DataGridViewRow row in resources.Rows) CompleteResourceSavePath(row);
+    }
+    bool IsDefaultResourcePath(string value)
+    {
+        string path = (value ?? "").Trim().Replace('/', '\\'); return path.Length == 0 || path.Equals("resources", StringComparison.OrdinalIgnoreCase) || path.Equals("resources\\", StringComparison.OrdinalIgnoreCase) || path.StartsWith("resources\\", StringComparison.OrdinalIgnoreCase);
+    }
+    void CompleteSelectedResource()
+    {
+        if (resources.CurrentRow == null || resources.CurrentRow.IsNewRow) { MessageBox.Show("请先选择一条已有资源记录。", Text, MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+        DataGridViewRow row = resources.CurrentRow; string fileName;
+        try { fileName = SafeFileNameFromUrl(Convert.ToString(row.Cells["downloadUrl"].Value ?? "")); }
+        catch (Exception ex) { MessageBox.Show("无法自动补全资源信息：" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+        if (string.IsNullOrWhiteSpace(Convert.ToString(row.Cells["name"].Value ?? ""))) row.Cells["name"].Value = fileName;
+        row.Cells["type"].Value = ResourceTypeForFileName(fileName);
+        if (IsDefaultResourcePath(Convert.ToString(row.Cells["savePath"].Value ?? ""))) row.Cells["savePath"].Value = "resources\\" + fileName;
+        resourceProgress.Text = "已补全名称、类型和安全保存路径。"; QueueAutoSave();
     }
     void BuildLogPage()
     {
@@ -237,8 +312,14 @@ public class InstallerStudioNative : Form
         Label cap = LabelText("调用本地 build-worker.ps1 并实时显示安装包生成进度", 8.5F, TextMuted); cap.Dock = DockStyle.Top; cap.Padding = new Padding(0, 0, 0, 12);
         Label head = LabelText("构建执行台", 12F, TextMain); head.Font = new Font("Microsoft YaHei UI", 12F, FontStyle.Bold); head.Dock = DockStyle.Top; head.Padding = new Padding(0, 0, 0, 5);
         card.Controls.Add(layout); card.Controls.Add(cap); card.Controls.Add(head);
-        Button go = ActionButton("调用 build-worker.ps1 构建安装包", true); go.Width = 290; go.Click += delegate { StartBuild(); }; buildState = LabelText("状态：空闲", 9F, TextMuted); buildState.Padding = new Padding(0, 12, 0, 4); progress = new ProgressBar { Dock = DockStyle.Top, Height = 12, ForeColor = Cyan, BackColor = Field }; logBox = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(241, 247, 247), ForeColor = Color.FromArgb(45, 93, 96), Font = new Font("Consolas", 9F) }; outputLabel = LabelText("输出：", 9F, TextMuted); outputLabel.Padding = new Padding(0, 8, 0, 0);
-        layout.Controls.Add(go, 0, 0); layout.Controls.Add(buildState, 0, 1); layout.Controls.Add(progress, 0, 2); layout.Controls.Add(logBox, 0, 3); layout.Controls.Add(outputLabel, 0, 4);
+        Button go = ActionButton("调用 build-worker.ps1 构建安装包", true); go.Width = 290; go.Click += delegate { StartBuild(); };
+        Panel buildActions = new Panel { Dock = DockStyle.Top, Height = 38, BackColor = Card }; buildActions.Controls.Add(go);
+        Label refreshLabel = LabelText("日志刷新阈值", 8.5F, TextMuted); refreshLabel.Location = new Point(310, 9); buildActions.Controls.Add(refreshLabel);
+        buildLogRefreshPercent = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Size = new Size(76, 28), Location = new Point(390, 4), BackColor = Field, ForeColor = TextMain, FlatStyle = FlatStyle.Flat };
+        buildLogRefreshPercent.Items.AddRange(new object[] { "5", "10", "20" }); buildLogRefreshPercent.SelectedItem = "10"; buildActions.Controls.Add(buildLogRefreshPercent);
+        Label refreshUnit = LabelText("% 文件比例", 8.5F, TextMuted); refreshUnit.Location = new Point(472, 9); buildActions.Controls.Add(refreshUnit);
+        buildState = LabelText("状态：空闲", 9F, TextMuted); buildState.Padding = new Padding(0, 12, 0, 4); progress = new ProgressBar { Dock = DockStyle.Top, Height = 12, ForeColor = Cyan, BackColor = Field }; logBox = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(241, 247, 247), ForeColor = Color.FromArgb(45, 93, 96), Font = new Font("Consolas", 9F) }; outputLabel = LabelText("输出：", 9F, TextMuted); outputLabel.Padding = new Padding(0, 8, 0, 0);
+        layout.Controls.Add(buildActions, 0, 0); layout.Controls.Add(buildState, 0, 1); layout.Controls.Add(progress, 0, 2); layout.Controls.Add(logBox, 0, 3); layout.Controls.Add(outputLabel, 0, 4);
     }
     TableLayoutPanel FormTable() { TableLayoutPanel t = new TableLayoutPanel { AutoSize = true, ColumnCount = 2, Padding = new Padding(0, 5, 0, 0), BackColor = Card }; t.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 145)); t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); return t; }
     object Get(IDictionary<string, object> d, string key) { return d.ContainsKey(key) && d[key] != null ? d[key] : null; }
@@ -246,12 +327,57 @@ public class InstallerStudioNative : Form
     bool B(IDictionary<string, object> d, string key) { object v = Get(d, key); return v != null && Convert.ToBoolean(v); }
     void LoadConfig(string path, bool showMessage)
     {
-        try { if (!File.Exists(path)) { if (showMessage) MessageBox.Show("文件不存在：" + path); return; } loadingConfig = true; IDictionary<string, object> d = json.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)) as IDictionary<string, object>; productName.Text = S(d,"productName"); productId.Text = S(d,"productId"); if (productId.Text.Length == 0) productId.Text = Guid.NewGuid().ToString().ToUpper(); version.Text = S(d,"version"); publisher.Text = S(d,"publisher"); subtitle.Text = S(d,"subtitle"); sourceDir.Text = S(d,"sourceDir"); outputDir.Text = S(d,"outputDir"); installPath.Text = S(d,"installPath"); mainExe.Text = S(d,"mainExe"); iconPath.Text = S(d,"iconPath"); prepLogoPath.Text = S(d,"prepLogoPath"); customInstall.Checked = !d.ContainsKey("allowCustomInstall") || B(d,"allowCustomInstall"); allowInstallPathSelection.Checked = B(d,"allowInstallPathSelection"); addToSystemPath.Checked = B(d,"addToSystemPath"); systemPathValue.Text = d.ContainsKey("systemPathValue") ? S(d,"systemPathValue") : "{app}"; desktop.Checked = B(d,"createDesktopShortcut"); desktopArgs.Text = S(d,"desktopArguments"); startMenu.Checked = B(d,"createStartMenuShortcut"); startMenuArgs.Text = S(d,"startMenuArguments"); startup.Checked = B(d,"createStartupEntry"); startupName.Text = S(d,"startupEntryName"); startupArgs.Text = S(d,"startupArguments"); cleanDesktop.Checked = !d.ContainsKey("cleanupDesktopShortcut") || B(d,"cleanupDesktopShortcut"); cleanStartMenu.Checked = !d.ContainsKey("cleanupStartMenuShortcut") || B(d,"cleanupStartMenuShortcut"); cleanStartup.Checked = !d.ContainsKey("cleanupStartupEntry") || B(d,"cleanupStartupEntry"); cleanInstallDir.Checked = false; int themeIndex = theme.FindStringExact(S(d,"theme")); theme.SelectedIndex = themeIndex >= 0 ? themeIndex : 1; resources.Rows.Clear(); IEnumerable list = Get(d,"optionalComponents") as IEnumerable; if (list != null) foreach (object item in list) { IDictionary<string, object> r = item as IDictionary<string, object>; if (r != null) resources.Rows.Add(S(r,"name"), S(r,"downloadUrl"), S(r,"extractPath"), B(r,"required"), S(r,"sha256")); } loadingConfig = false; if (showMessage) MessageBox.Show("已加载产品模板。", Text); } catch (Exception ex) { loadingConfig = false; MessageBox.Show("读取配置失败：" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        try { if (!File.Exists(path)) { if (showMessage) MessageBox.Show("文件不存在：" + path); return; } loadingConfig = true; IDictionary<string, object> d = json.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)) as IDictionary<string, object>; if (d == null) throw new InvalidDataException("配置文件格式无效。"); componentTitle.Text = S(d,"componentTitle"); productName.Text = S(d,"productName"); productId.Text = S(d,"productId"); if (productId.Text.Length == 0) productId.Text = Guid.NewGuid().ToString().ToUpper(); version.Text = S(d,"version"); publisher.Text = S(d,"publisher"); subtitle.Text = S(d,"subtitle"); sourceDir.Text = S(d,"sourceDir"); outputDir.Text = S(d,"outputDir"); installPath.Text = S(d,"installPath"); mainExe.Text = S(d,"mainExe"); iconPath.Text = S(d,"iconPath"); prepLogoPath.Text = S(d,"prepLogoPath"); allowInstallDirSelection.Checked = !d.ContainsKey("allowInstallDirSelection") || B(d,"allowInstallDirSelection"); IEnumerable runtimeEntries = Get(d,"runtimePathEntries") as IEnumerable; List<string> runtimeValues = new List<string>(); if (runtimeEntries != null) foreach (object entry in runtimeEntries) { string value = Convert.ToString(entry ?? "").Trim(); if (value.Length > 0) runtimeValues.Add(value); } runtimePathEntriesValue.Text = string.Join(";", runtimeValues.ToArray()); loadingConfig = false; NormalizeRuntimePathEntriesField(false); loadingConfig = true; string refreshPercent = S(d,"buildLogRefreshPercent"); if (buildLogRefreshPercent != null) buildLogRefreshPercent.SelectedItem = (refreshPercent == "5" || refreshPercent == "20") ? refreshPercent : "10"; desktop.Checked = B(d,"createDesktopShortcut"); desktopArgs.Text = S(d,"desktopArguments"); startMenu.Checked = B(d,"createStartMenuShortcut"); startMenuArgs.Text = S(d,"startMenuArguments"); startup.Checked = B(d,"createStartupEntry"); startupName.Text = S(d,"startupEntryName"); startupArgs.Text = S(d,"startupArguments"); cleanDesktop.Checked = !d.ContainsKey("cleanupDesktopShortcut") || B(d,"cleanupDesktopShortcut"); cleanStartMenu.Checked = !d.ContainsKey("cleanupStartMenuShortcut") || B(d,"cleanupStartMenuShortcut"); cleanStartup.Checked = !d.ContainsKey("cleanupStartupEntry") || B(d,"cleanupStartupEntry"); cleanInstallDir.Checked = false; resources.Rows.Clear(); IEnumerable list = Get(d,"optionalComponents") as IEnumerable; if (list != null) foreach (object item in list) { IDictionary<string, object> r = item as IDictionary<string, object>; if (r != null) resources.Rows.Add(B(r,"enabled"), S(r,"name"), string.IsNullOrWhiteSpace(S(r,"type")) ? "file" : S(r,"type"), S(r,"downloadUrl"), S(r,"savePath"), B(r,"required")); } loadingConfig = false; if (showMessage) MessageBox.Show("已加载产品模板。", Text); } catch (Exception ex) { loadingConfig = false; MessageBox.Show("读取配置失败：" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); }
+    }
+    List<string> RuntimePathEntries()
+    {
+        List<string> entries = new List<string>();
+        foreach (string raw in (runtimePathEntriesValue.Text ?? "").Split(new char[] { ';', '；' }))
+        {
+            string entry = raw.Trim().Replace('/', '\\');
+            if (entry.Length == 0) continue;
+            if (string.Equals(entry, "{app}", StringComparison.OrdinalIgnoreCase)) entry = "{app}";
+            else
+            {
+                if (entry.StartsWith("{app}\\", StringComparison.OrdinalIgnoreCase)) entry = entry.Substring(6);
+                else if (entry.StartsWith("{", StringComparison.Ordinal) || entry.IndexOf('{') >= 0 || entry.IndexOf('}') >= 0) throw new InvalidDataException("运行时依赖目录仅允许 {app} token：" + raw);
+                if (entry.StartsWith("\\\\", StringComparison.Ordinal) || Path.IsPathRooted(entry)) throw new InvalidDataException("运行时依赖目录不允许绝对路径：" + raw);
+                string[] parts = entry.Trim('\\').Split('\\');
+                if (parts.Length == 0 || parts.Any(part => string.IsNullOrWhiteSpace(part) || part == "." || part == "..")) throw new InvalidDataException("运行时依赖目录不允许 .、.. 或空路径段：" + raw);
+                entry = "{app}\\" + string.Join("\\", parts);
+            }
+            if (!entries.Exists(delegate(string existing) { return string.Equals(existing, entry, StringComparison.OrdinalIgnoreCase); })) entries.Add(entry);
+        }
+        return entries;
+    }
+    void NormalizeRuntimePathEntriesField(bool showError)
+    {
+        if (runtimePathEntriesValue == null || loadingConfig) return;
+        try
+        {
+            string normalized = string.Join(";", RuntimePathEntries().ToArray());
+            if (!string.Equals(runtimePathEntriesValue.Text, normalized, StringComparison.Ordinal)) runtimePathEntriesValue.Text = normalized;
+        }
+        catch (Exception ex)
+        {
+            if (showError) MessageBox.Show("运行时依赖目录格式无效：" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+    string SafeComponentRelativePath(string value, string label, bool requireFileName)
+    {
+        string path = (value ?? "").Trim().Replace('/', '\\');
+        string[] parts = path.Split('\\');
+        if (path.Length == 0 || Path.IsPathRooted(path) || path.StartsWith("\\") || parts.Any(part => string.IsNullOrWhiteSpace(part) || part == "." || part == "..") || (requireFileName && string.IsNullOrWhiteSpace(Path.GetFileName(path)))) throw new InvalidDataException(label + "必须是安装根目录下的安全相对路径" + (requireFileName ? "（含文件名）" : "") + "，禁止绝对路径、.、.. 与空路径段。");
+        return string.Join("\\", parts);
     }
     Dictionary<string, object> Config()
     {
-        List<Dictionary<string, object>> list = new List<Dictionary<string, object>>(); foreach (DataGridViewRow row in resources.Rows) if (!row.IsNewRow) { string name = Convert.ToString(row.Cells["name"].Value ?? ""); string url = Convert.ToString(row.Cells["downloadUrl"].Value ?? ""); if (name.Length > 0 || url.Length > 0) list.Add(new Dictionary<string, object> { {"name",name}, {"downloadUrl",url}, {"extractPath",Convert.ToString(row.Cells["extractPath"].Value ?? "")}, {"required",Convert.ToBoolean(row.Cells["required"].Value ?? false)}, {"sha256",Convert.ToString(row.Cells["sha256"].Value ?? "")} }); }
-        return new Dictionary<string, object> { {"schemaVersion",2}, {"productName",productName.Text}, {"productId",productId.Text}, {"upgradeCode",productId.Text}, {"version",version.Text}, {"publisher",publisher.Text}, {"subtitle",subtitle.Text}, {"sourceDir",sourceDir.Text}, {"outputDir",outputDir.Text}, {"installPath",installPath.Text}, {"mainExe",mainExe.Text}, {"iconPath",iconPath.Text}, {"prepLogoPath",prepLogoPath.Text}, {"allowCustomInstall",customInstall.Checked}, {"allowInstallPathSelection",allowInstallPathSelection.Checked}, {"addToSystemPath",addToSystemPath.Checked}, {"systemPathValue",systemPathValue.Text}, {"createDesktopShortcut",desktop.Checked}, {"desktopArguments",desktopArgs.Text}, {"createStartMenuShortcut",startMenu.Checked}, {"startMenuArguments",startMenuArgs.Text}, {"createStartupEntry",startup.Checked}, {"startupEntryName",startupName.Text}, {"startupArguments",startupArgs.Text}, {"cleanupDesktopShortcut",cleanDesktop.Checked}, {"cleanupStartMenuShortcut",cleanStartMenu.Checked}, {"cleanupStartupEntry",cleanStartup.Checked}, {"cleanupInstallDirectory",false}, {"theme",theme.Text}, {"optionalComponents",list} };
+        CompleteAllResourceSavePaths();
+        List<string> runtimeEntries = RuntimePathEntries();
+        string runtimeText = string.Join(";", runtimeEntries.ToArray());
+        if (!string.Equals(runtimePathEntriesValue.Text, runtimeText, StringComparison.Ordinal)) runtimePathEntriesValue.Text = runtimeText;
+        List<Dictionary<string, object>> list = new List<Dictionary<string, object>>(); HashSet<string> urls = new HashSet<string>(StringComparer.OrdinalIgnoreCase); foreach (DataGridViewRow row in resources.Rows) if (!row.IsNewRow) { string name = Convert.ToString(row.Cells["name"].Value ?? "").Trim(); string url = Convert.ToString(row.Cells["downloadUrl"].Value ?? "").Trim(); bool enabled = Convert.ToBoolean(row.Cells["enabled"].Value ?? false); string type = Convert.ToString(row.Cells["type"].Value ?? "file").Trim().ToLowerInvariant(); string savePath = Convert.ToString(row.Cells["savePath"].Value ?? "").Trim(); if (name.Length > 0 || url.Length > 0) { if (enabled && (name.Length == 0 || url.Length == 0 || (type != "file" && type != "zip" && type != "rar" && type != "tar.gz"))) throw new InvalidDataException("组件启用规则：必须填写名称、HTTPS 下载 URL、file/zip/rar/tar.gz 类型和含文件名的安全 savePath。"); if (enabled) { SafeFileNameFromUrl(url); savePath = SafeComponentRelativePath(savePath, "组件 savePath", true); if (!urls.Add(url)) throw new InvalidDataException("不同组件不能使用相同 HTTPS 下载 URL：" + url); } list.Add(new Dictionary<string, object> { {"enabled",enabled}, {"name",name}, {"type",type}, {"downloadUrl",url}, {"savePath",savePath}, {"required",Convert.ToBoolean(row.Cells["required"].Value ?? false)} }); } }
+        return new Dictionary<string, object> { {"schemaVersion",9}, {"buildLogRefreshPercent", buildLogRefreshPercent != null && (buildLogRefreshPercent.Text == "5" || buildLogRefreshPercent.Text == "20") ? Convert.ToInt32(buildLogRefreshPercent.Text) : 10}, {"runtimeNotice", ""}, {"componentNotice", ""}, {"componentTitle", componentTitle.Text ?? ""}, {"productName",productName.Text}, {"productId",productId.Text}, {"upgradeCode",productId.Text}, {"version",version.Text}, {"publisher",publisher.Text}, {"subtitle",subtitle.Text}, {"sourceDir",sourceDir.Text}, {"outputDir",outputDir.Text}, {"installPath",installPath.Text}, {"mainExe",mainExe.Text}, {"iconPath",iconPath.Text}, {"prepLogoPath",prepLogoPath.Text}, {"allowInstallDirSelection",allowInstallDirSelection.Checked}, {"runtimePathEntries",runtimeEntries}, {"createDesktopShortcut",desktop.Checked}, {"desktopArguments",desktopArgs.Text}, {"createStartMenuShortcut",startMenu.Checked}, {"startMenuArguments",startMenuArgs.Text}, {"createStartupEntry",startup.Checked}, {"startupEntryName",startupName.Text}, {"startupArguments",startupArgs.Text}, {"cleanupDesktopShortcut",cleanDesktop.Checked}, {"cleanupStartMenuShortcut",cleanStartMenu.Checked}, {"cleanupStartupEntry",cleanStartup.Checked}, {"cleanupInstallDirectory",false}, {"optionalComponents",list} };
     }
     void SaveConfig(string path) { File.WriteAllText(path, json.Serialize(Config()), new UTF8Encoding(false)); }
     void SaveDefaultConfig() { try { SaveConfig(Path.Combine(scriptDir, "build-config.json")); } catch { } }
@@ -271,11 +397,36 @@ public class InstallerStudioNative : Form
         for (int i = 0; i < profileList.Items.Count; i++) if (string.Equals(((ProfileItem)profileList.Items[i]).Path, selected, StringComparison.OrdinalIgnoreCase)) { profileList.SelectedIndex = i; break; }
     }
     class ProfileItem { public string Name; public string Path; public override string ToString() { return Name; } }
+    HashSet<string> UsedProductIds(string targetPath)
+    {
+        HashSet<string> ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string file in Directory.GetFiles(ProfilesDir(), "*.json"))
+        {
+            if (!string.IsNullOrEmpty(targetPath) && string.Equals(Path.GetFullPath(file), Path.GetFullPath(targetPath), StringComparison.OrdinalIgnoreCase)) continue;
+            try
+            {
+                IDictionary<string, object> data = json.DeserializeObject(File.ReadAllText(file, Encoding.UTF8)) as IDictionary<string, object>;
+                Guid id; if (data != null && Guid.TryParse(S(data, "productId"), out id)) ids.Add(id.ToString("D"));
+            }
+            catch { } // 损坏或非模板JSON不阻塞其他模板保存。
+        }
+        return ids;
+    }
+    bool EnsureUniqueProductId(string targetPath)
+    {
+        Guid current; if (!Guid.TryParse(productId.Text.Trim(), out current)) { productId.Text = Guid.NewGuid().ToString().ToUpper(); return true; }
+        HashSet<string> used = UsedProductIds(targetPath);
+        if (!used.Contains(current.ToString("D"))) return false;
+        Guid replacement; do { replacement = Guid.NewGuid(); } while (used.Contains(replacement.ToString("D")));
+        productId.Text = replacement.ToString().ToUpper();
+        return true;
+    }
     void SaveProfile(bool copy)
     {
         string path = activeProfilePath;
         if (copy || string.IsNullOrEmpty(path)) { string name = SafeProfileName(productName.Text); path = Path.Combine(ProfilesDir(), name + ".json"); int index=2; while(File.Exists(path) && (copy || !string.Equals(path,activeProfilePath,StringComparison.OrdinalIgnoreCase))) { path=Path.Combine(ProfilesDir(),name+"-"+index+".json"); index++; } }
-        SaveConfig(path); activeProfilePath = path; RefreshProfiles(); MessageBox.Show("产品模板已保存：" + Path.GetFileName(path), Text);
+        bool changedId = EnsureUniqueProductId(path);
+        SaveConfig(path); activeProfilePath = path; RefreshProfiles(); MessageBox.Show("产品模板已保存：" + Path.GetFileName(path) + (changedId ? "\r\n检测到产品唯一 ID 已被其他模板使用，已自动生成新的 ID。" : ""), Text);
     }
     void LoadSelectedProfile() { ProfileItem item = profileList == null ? null : profileList.SelectedItem as ProfileItem; if (item == null) { MessageBox.Show("请先选择产品模板。", Text); return; } activeProfilePath=item.Path; LoadConfig(item.Path, true); }
     void DeleteSelectedProfile() { ProfileItem item = profileList == null ? null : profileList.SelectedItem as ProfileItem; if(item == null) return; if(MessageBox.Show("删除模板“"+item.Name+"”？不会删除产品文件或已生成安装包。",Text,MessageBoxButtons.YesNo,MessageBoxIcon.Warning)!=DialogResult.Yes) return; File.Delete(item.Path); activeProfilePath=null; RefreshProfiles(); }
@@ -303,12 +454,21 @@ public class InstallerStudioNative : Form
     string ReadStatusWithRetry(string path)
     {
         Exception last = null;
-        for (int attempt = 0; attempt < 5; attempt++)
+        for (int attempt = 0; attempt < 20; attempt++)
         {
-            try { using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) using (StreamReader reader = new StreamReader(stream, Encoding.UTF8)) return reader.ReadToEnd(); }
-            catch (IOException ex) { last = ex; System.Threading.Thread.Sleep(80); }
+            try
+            {
+                using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
+                {
+                    string value = reader.ReadToEnd();
+                    if (string.IsNullOrWhiteSpace(value)) throw new InvalidDataException("状态文件尚未写完。");
+                    json.DeserializeObject(value); // 先验证完整 JSON，避免调用方看到半截内容。
+                    return value;
+                }
+            }
+            catch (Exception ex) { last = ex; System.Threading.Thread.Sleep(100); }
         }
-        throw new IOException("无法读取构建状态文件（文件可能仍被占用）。", last);
+        throw new IOException("无法读取完整的构建状态文件。", last);
     }
     void BuildProcessExited(object sender, EventArgs args)
     {
@@ -364,7 +524,7 @@ public class InstallerStudioNative : Form
             if (string.IsNullOrEmpty(iscc)) { string message = "未找到 Inno Setup 编译器 ISCC.exe。请安装 Inno Setup 6，或将 INNO_SETUP_PATH 设置为 ISCC.exe 或其安装目录。\r\n已检查：\r\nC:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe\r\nC:\\Program Files\\Inno Setup 6\\ISCC.exe"; WriteBuildError(message); buildState.Text = "状态：错误（未找到 ISCC.exe）"; logBox.Text = "[ERROR] " + message; SelectPage(3); MessageBox.Show(message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
             buildWorker = Path.Combine(scriptDir, "build-worker.ps1"); string config = Path.Combine(scriptDir, "build-config.json"); buildStatusFile = Path.Combine(scriptDir, "build-status.json");
             if (!File.Exists(buildWorker)) throw new FileNotFoundException("未找到 build-worker.ps1", buildWorker);
-            SaveConfig(config); WriteBuildStatus("starting", "构建正在启动...");
+            SaveConfig(config); lastStatusSnapshot = null; WriteBuildStatus("starting", "构建正在启动...");
             string innoBinDir = Path.GetDirectoryName(iscc);
             ProcessStartInfo psi = new ProcessStartInfo("powershell.exe", BuildWorkerCommand(buildWorker, config, buildStatusFile, scriptDir, innoBinDir));
             psi.CreateNoWindow = true; psi.UseShellExecute = false; psi.RedirectStandardError = true; psi.RedirectStandardOutput = true;
@@ -384,10 +544,13 @@ public class InstallerStudioNative : Form
         {
             IDictionary<string, object> d = json.DeserializeObject(ReadStatusWithRetry(statusFile)) as IDictionary<string, object>;
             if (d == null) throw new InvalidDataException("构建状态文件格式无效。");
-            string state = S(d,"status"), error = S(d,"error"); int value = 0; Int32.TryParse(S(d,"progress"), out value); progress.Value = Math.Max(0, Math.Min(100, value));
-            buildState.Text = "状态：" + state + "（" + value + "%）" + (error.Length > 0 ? " - " + error : ""); outputLabel.Text = "输出：" + S(d,"output"); logBox.Text = "";
-            IEnumerable logs = Get(d,"log") as IEnumerable; if (logs != null) foreach (object line in logs) logBox.AppendText(Convert.ToString(line) + Environment.NewLine);
-            if (error.Length > 0 && (logs == null)) logBox.AppendText("[ERROR] " + error + Environment.NewLine);
+            string state = S(d,"status"), error = S(d,"error"), output = S(d,"output"); int value = 0; Int32.TryParse(S(d,"progress"), out value);
+            IEnumerable logs = Get(d,"log") as IEnumerable; StringBuilder logText = new StringBuilder(); if (logs != null) foreach (object line in logs) logText.AppendLine(Convert.ToString(line));
+            if (error.Length > 0 && logs == null) logText.AppendLine("[ERROR] " + error);
+            string snapshot = state + "\n" + value + "\n" + error + "\n" + output + "\n" + logText.ToString();
+            if (string.Equals(lastStatusSnapshot, snapshot, StringComparison.Ordinal)) { if (state == "done" || state == "error") statusTimer.Stop(); return; }
+            lastStatusSnapshot = snapshot; progress.Value = Math.Max(0, Math.Min(100, value));
+            buildState.Text = "状态：" + state + "（" + value + "%）" + (error.Length > 0 ? " - " + error : ""); outputLabel.Text = "输出：" + output; logBox.Text = logText.ToString();
             logBox.SelectionStart = logBox.TextLength; logBox.ScrollToCaret(); if (state == "done" || state == "error") statusTimer.Stop();
         }
         catch (Exception ex) { buildState.Text = "状态：读取构建状态失败 - " + ex.Message; logBox.Text = "[ERROR] " + ex.ToString(); statusTimer.Stop(); }
